@@ -26,8 +26,8 @@ jobs:
         with:
           node-version: 20
       - uses: actions/configure-pages@v5
-      - run: npm install --prefix /tmp/vp vitepress@1.6.4
-      - run: DOCS_BASE=/rusty/ /tmp/vp/node_modules/.bin/vitepress build docs
+      - run: npm install --prefix /tmp/vp vitepress@1.6.4 && ln -s /tmp/vp/node_modules node_modules
+      - run: DOCS_BASE=/rusty/ ./node_modules/.bin/vitepress build docs
       - uses: actions/upload-pages-artifact@v3
         with:
           path: docs/.vitepress/dist
