@@ -1,6 +1,6 @@
 # rusty
 
-Rust state-machine modeling & simulation studio built as the poster-child **WebGME + [`webgme-git`](../webgme-git)** application:
+Rust state-machine modeling & simulation studio built as the poster-child **WebGME + [`webgme-git`](https://github.com/kecso/webgme-git)** application:
 
 - **WebGME owns topology & data** (`StateMachine`, `State`, `Transition`, `GlobalVar`, `EventDef`, canvas positions, and `GitArtifactLink` coordinates). The Rusty Studio UI connects directly to the live WebGME server via `GME.classes.Client` (`/gme-dist/webgme.classes.build.js`), subscribes to live WebGME territories, and commits every edit inside WebGME transactions.
 - **GitHub owns per-state Rust behavior** via `webgme-git`: embedded self-hosted **Monaco Editor** auto-fetches state files on edit via Octokit (`/routers/gitrouter/tree`), validates code in **< 1ms** via `RustyAnalyzer`, and commits+pushes atomically on `⌘S` / `Ctrl+S` (`/routers/gitrouter/commit`) with transparent auto-rebase and HTTP 409 3-way conflict resolution.
@@ -82,6 +82,20 @@ npm run sync:examples # Regenerate examples/ from src/common/rustContract.js
 npm run build:seed # Rebuild seed/RustySeed.webgmex from metamodel/Language.json
 npm run docs:dev   # Preview VitePress tutorial docs locally
 npm run docs:build # Build VitePress docs for /routers/studio/docs/
+```
+
+## Local Co-Development (`npm link`)
+
+`package.json` depends directly on the GitHub sources (`github:kecso/webgme-git` and `github:kecso/webgme-json-importer`) with zero relative `file:` paths. When developing those libraries side-by-side locally, use `npm link`:
+
+```bash
+# 1. Register shared local packages once:
+(cd /path/to/webgme-json-importer && npm link)
+(cd /path/to/webgme-git && npm link && npm link webgme-json-importer)
+
+# 2. Link them into rusty after npm install:
+npm install
+npm link webgme-git webgme-json-importer
 ```
 
 ## License

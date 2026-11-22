@@ -21,14 +21,14 @@ const COMMON_DIR = path.resolve(__dirname, "../../common");
 const DOCS_DIST_DIR = path.resolve(__dirname, "../../../docs/.vitepress/dist");
 
 function resolveMonacoVsDir() {
-  const candidates = [
-    path.resolve(__dirname, "../../../node_modules/monaco-editor/min/vs"),
-    path.resolve(__dirname, "../../../../cps-build-studio/node_modules/monaco-editor/min/vs"),
-  ];
-  for (const c of candidates) {
-    if (fs.existsSync(c)) return c;
+  try {
+    const vsDir = path.dirname(require.resolve("monaco-editor"));
+    if (fs.existsSync(path.join(vsDir, "loader.js"))) return vsDir;
+  } catch (_err) {
+    // fallback to package-local node_modules
   }
-  return null;
+  const localDir = path.resolve(__dirname, "../../../node_modules/monaco-editor/min/vs");
+  return fs.existsSync(path.join(localDir, "loader.js")) ? localDir : null;
 }
 
 function initialize(middlewareOpts) {

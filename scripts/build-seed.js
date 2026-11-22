@@ -2,11 +2,13 @@
 "use strict";
 
 /**
- * Build seed/RustySeed.webgmex from metamodel/Language.json + starter BlinkyController model.
+ * Build seed/RustySeed.webgmex from metamodel/Language.json + starter example models.
  *
- * Uses sibling ../webgme-json-importer + MongoDB (e.g. local mongod or docker mongo:4.4).
+ * Uses `webgme-json-importer` and `webgme` resolved from `node_modules`
+ * (installed from GitHub or linked locally via `npm link webgme-json-importer`).
+ * Runs completely in memory via WebGME SafeStorage + Memory backend (no MongoDB required).
  *
- *   MONGO_URI=mongodb://127.0.0.1:27017/rusty_seed_build npm run build:seed
+ *   npm run build:seed
  */
 
 const fs = require("fs");
@@ -15,44 +17,46 @@ const { execFileSync } = require("child_process");
 const { getStarterBlinkyModel, getSmartThermostatModel } = require("../src/common/rustContract");
 
 const REPO_ROOT = path.resolve(__dirname, "..");
-const IMPORTER_ROOT = path.resolve(REPO_ROOT, "../webgme-json-importer");
 const LANGUAGE_JSON = path.join(REPO_ROOT, "metamodel/Language.json");
 const OUT_DIR = path.join(REPO_ROOT, "seed");
 const OUT_WEBGMEX = path.join(OUT_DIR, "RustySeed.webgmex");
 const META_SHEET = "MetaAspectSet_rusty-metamodel-v1";
 
-function fail(msg) {
-  console.error(msg);
-  process.exit(1);
-}
-
-if (!fs.existsSync(IMPORTER_ROOT)) {
-  fail(`Missing sibling checkout at ${IMPORTER_ROOT}`);
-}
-
-const EMPTY_SEED = path.join(
-  IMPORTER_ROOT,
-  "node_modules/webgme-engine/seeds/EmptyProject.webgmex",
-);
-if (!fs.existsSync(EMPTY_SEED)) {
-  fail(`EmptyProject seed not found at ${EMPTY_SEED}`);
-}
-
-process.chdir(IMPORTER_ROOT);
-
-const mongoUri =
-  process.env.MONGO_URI || "mongodb://127.0.0.1:27017/rusty_seed_build";
-
-const testFixture = require(path.join(IMPORTER_ROOT, "test/globals.js"));
-const WebGME = testFixture.WebGME;
-const Q = testFixture.Q;
-const gmeConfig = testFixture.getGmeConfig();
-gmeConfig.mongo.uri = mongoUri;
+const WebGME = require("webgme");
+const gmeConfig = require("webgme/config/config.default");
 WebGME.addToRequireJsPaths(gmeConfig);
 
-const Core = testFixture.requirejs("common/core/coreQ");
-const Importer = testFixture.requirejs("webgme-json-importer/JSONImporter");
-const storageUtils = testFixture.requirejs("common/storage/util");
+const ENGINE_DIR = path.dirname(require.resolve("webgme-engine/package.json"));
+const EMPTY_SEED = require.resolve("webgme-engine/seeds/EmptyProject.webgmex");
+const Logger = require(path.join(ENGINE_DIR, "src/server/logger"));
+const SafeStorage = require(path.join(ENGINE_DIR, "src/server/storage/safestorage"));
+const Memory = require(path.join(ENGINE_DIR, "src/server/storage/memory"));
+const Core = WebGME.requirejs("common/core/coreQ");
+const storageUtils = WebGME.requirejs("common/storage/util");
+const ImporterMod = require("webgme-json-importer");
+const Importer = ImporterMod.default || ImporterMod;
+
+function createInMemoryAuth() {
+  const projects = new Map();
+  return {
+    metadataStorage: {
+      getProject: async (id) => projects.get(id),
+      getProjects: async () => Array.from(projects.values()),
+      addProject: async (owner, name, info) => {
+        const doc = { _id: `${owner}+${name}`, owner, name, info: info || {} };
+        projects.set(doc._id, doc);
+        return doc._id;
+      },
+      updateProjectInfo: async () => {},
+      deleteProject: async (id) => projects.delete(id),
+    },
+    authorizer: {
+      ENTITY_TYPES: { PROJECT: "PROJECT" },
+      getAccessRights: async () => ({ read: true, write: true, delete: true }),
+      setAccessRights: async () => {},
+    },
+  };
+}
 
 function findByName(core, nodes, name) {
   return nodes.find((n) => core.getAttribute(n, "name") === name);
@@ -217,42 +221,48 @@ async function applyRustySeed(core, root, language) {
 
 async function main() {
   const language = JSON.parse(fs.readFileSync(LANGUAGE_JSON, "utf8"));
-  const logger = testFixture.logger.fork("rusty-seed");
+  const logger = Logger.create("gme:rusty-seed", gmeConfig.server.log, false);
 
-  const gmeAuth = await testFixture.clearDBAndGetGMEAuth(gmeConfig, "rusty_seed_tmp");
-  const storage = testFixture.getMongoStorage(logger, gmeConfig, gmeAuth);
+  const storage = new SafeStorage(
+    new Memory(logger, gmeConfig),
+    logger,
+    gmeConfig,
+    createInMemoryAuth(),
+  );
   await storage.openDatabase();
 
   try {
-    const imported = await testFixture.importProject(storage, {
-      projectSeed: EMPTY_SEED,
+    const emptyJson = JSON.parse(
+      execFileSync("unzip", ["-p", EMPTY_SEED, "project.json"], { encoding: "utf8" }),
+    );
+    const project = await storage.createProject({
       projectName: "rusty_seed_tmp",
-      branchName: "master",
-      logger,
-      gmeConfig,
+      ownerId: "guest",
+      username: "guest",
     });
+    const initCommit = await storageUtils.insertProjectJson(project, emptyJson, {
+      commitMessage: "Initialize from EmptyProject",
+    });
+    await project.createBranch("master", initCommit.hash);
 
-    const project = imported.project;
     const core = new Core(project, { globConf: gmeConfig, logger: logger.fork("core") });
-    const root = await Q.ninvoke(core, "loadRoot", imported.rootHash);
+    const root = await core.loadRoot(emptyJson.rootHash);
 
     const summary = await applyRustySeed(core, root, language);
     const persisted = await core.persist(root);
-    const commitRes = await Q.ninvoke(
-      project,
-      "makeCommit",
+    const commitRes = await project.makeCommit(
       "master",
-      [imported.commitHash],
+      [initCommit.hash],
       persisted.rootHash,
       persisted.objects,
-      "Build RustySeed metamodel + BlinkyController starter",
+      "Build RustySeed metamodel + BlinkyController & SmartThermostat starters",
     );
 
     if (!commitRes.hash) {
       throw new Error("makeCommit did not return a hash: " + JSON.stringify(commitRes));
     }
 
-    const projectJson = await Q.ninvoke(storageUtils, "getProjectJson", project, {
+    const projectJson = await storageUtils.getProjectJson(project, {
       branchName: "master",
       kind: "RustySeed",
     });
@@ -282,7 +292,6 @@ async function main() {
     console.log("  metaPaths :", summary.metaPaths);
   } finally {
     await storage.closeDatabase();
-    await gmeAuth.unload();
   }
 }
 

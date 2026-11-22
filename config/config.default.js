@@ -18,7 +18,7 @@ config.seedProjects.enable = true;
 config.seedProjects.defaultProject = "RustySeed";
 config.seedProjects.basePaths = [
   path.join(ROOT, "seed"),
-  path.resolve(ROOT, "node_modules/webgme-git/seed"),
+  path.join(path.dirname(require.resolve("webgme-git/package.json")), "seed"),
 ];
 
 // Register Rusty plugins

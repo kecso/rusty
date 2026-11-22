@@ -16,6 +16,6 @@ Rusty's DSML is defined in `metamodel/Language.json` and compiled into `seed/Rus
 ## Rebuilding the Seed
 
 ```bash
-# Requires a running MongoDB instance (e.g. port 27017 or 27019)
-MONGO_URI=mongodb://127.0.0.1:27017/rusty_seed_build npm run build:seed
+# Rebuilds seed/RustySeed.webgmex completely in-memory (no MongoDB required)
+npm run build:seed
 ```

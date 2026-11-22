@@ -23,6 +23,10 @@
     "modeling"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kecso/rusty.git"
+  },
   "engines": {
     "node": ">=18"
   },
@@ -31,9 +35,10 @@
     "express": "^4.21.2",
     "monaco-editor": "^0.57.0",
     "webgme": "^2.23.0",
-    "webgme-git": "file:../webgme-git"
+    "webgme-git": "git+https://github.com/kecso/webgme-git.git"
   },
   "devDependencies": {
-    "vitepress": "^1.6.4"
+    "vitepress": "^1.6.4",
+    "webgme-json-importer": "github:kecso/webgme-json-importer"
   }
 }
