@@ -1,0 +1,15 @@
+{
+  "id": "GenerateRustCrate",
+  "name": "Generate Rust Crate",
+  "version": "0.1.0",
+  "description": "Generates a self-contained Rust state-machine crate from a Rusty StateMachine WebGME model.",
+  "icon": {
+    "class": "glyphicon glyphicon-cog",
+    "src": ""
+  },
+  "disableServerSideExecution": false,
+  "disableBrowserSideExecution": false,
+  "dependencies": [],
+  "writeAccessRequired": false,
+  "configStructure": []
+}

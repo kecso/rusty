@@ -1,0 +1,11 @@
+{
+  "metaPaths": {
+    "GitArtifactLink": "/m",
+    "StateMachine": "/R",
+    "State": "/B",
+    "Transition": "/T",
+    "GlobalVar": "/O",
+    "EventDef": "/X"
+  },
+  "starterMachinePath": "/b"
+}

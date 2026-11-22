@@ -1,0 +1,184 @@
+{
+  "attributes": {
+    "name": "ROOT"
+  },
+  "children": [
+    {
+      "id": "@meta:GitArtifactLink",
+      "attributes": {
+        "name": "GitArtifactLink",
+        "gitOwner": "",
+        "gitRepo": "",
+        "gitBranch": "main",
+        "gitPath": "",
+        "gitArtifactType": "file",
+        "gitBaseCommitSha": ""
+      },
+      "attribute_meta": {
+        "name": { "type": "string" },
+        "gitOwner": { "type": "string" },
+        "gitRepo": { "type": "string" },
+        "gitBranch": { "type": "string" },
+        "gitPath": { "type": "string" },
+        "gitArtifactType": {
+          "type": "string",
+          "enum": ["file", "dir"]
+        },
+        "gitBaseCommitSha": { "type": "string" }
+      },
+      "pointers": {
+        "base": "/1"
+      },
+      "mixins": [],
+      "registry": {
+        "position": { "x": 120, "y": 80 },
+        "DisplayFormat": "$name",
+        "isAbstract": true
+      }
+    },
+    {
+      "id": "@meta:StateMachine",
+      "attributes": {
+        "name": "StateMachine",
+        "crateName": "rusty_machine",
+        "description": "",
+        "tickMs": 800,
+        "gitArtifactType": "dir"
+      },
+      "attribute_meta": {
+        "name": { "type": "string" },
+        "crateName": { "type": "string" },
+        "description": { "type": "string" },
+        "tickMs": { "type": "integer" }
+      },
+      "pointers": {
+        "base": "/1"
+      },
+      "mixins": ["@meta:GitArtifactLink"],
+      "registry": {
+        "position": { "x": 380, "y": 80 },
+        "DisplayFormat": "$name"
+      },
+      "children_meta": {
+        "min": -1,
+        "max": -1,
+        "@meta:State": { "min": -1, "max": -1 },
+        "@meta:Transition": { "min": -1, "max": -1 },
+        "@meta:GlobalVar": { "min": -1, "max": -1 },
+        "@meta:EventDef": { "min": -1, "max": -1 }
+      }
+    },
+    {
+      "id": "@meta:State",
+      "attributes": {
+        "name": "State",
+        "description": "",
+        "isInitial": false,
+        "isFinal": false,
+        "color": "#38bdf8",
+        "codeCache": "",
+        "gitArtifactType": "file"
+      },
+      "attribute_meta": {
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "isInitial": { "type": "boolean" },
+        "isFinal": { "type": "boolean" },
+        "color": { "type": "string" },
+        "codeCache": { "type": "string" }
+      },
+      "pointers": {
+        "base": "/1"
+      },
+      "mixins": ["@meta:GitArtifactLink"],
+      "registry": {
+        "position": { "x": 120, "y": 280 },
+        "DisplayFormat": "$name"
+      }
+    },
+    {
+      "id": "@meta:Transition",
+      "attributes": {
+        "name": "Transition",
+        "event": "Tick",
+        "guard": "",
+        "action": "",
+        "priority": 1
+      },
+      "attribute_meta": {
+        "name": { "type": "string" },
+        "event": { "type": "string" },
+        "guard": { "type": "string" },
+        "action": { "type": "string" },
+        "priority": { "type": "integer" }
+      },
+      "pointers": {
+        "base": "/1"
+      },
+      "pointer_meta": {
+        "src": {
+          "min": 1,
+          "max": 1,
+          "@meta:State": { "min": 1, "max": 1 }
+        },
+        "dst": {
+          "min": 1,
+          "max": 1,
+          "@meta:State": { "min": 1, "max": 1 }
+        }
+      },
+      "mixins": [],
+      "registry": {
+        "position": { "x": 340, "y": 280 },
+        "DisplayFormat": "$event"
+      }
+    },
+    {
+      "id": "@meta:GlobalVar",
+      "attributes": {
+        "name": "GlobalVar",
+        "rustType": "i32",
+        "initialValue": "0",
+        "description": ""
+      },
+      "attribute_meta": {
+        "name": { "type": "string" },
+        "rustType": {
+          "type": "string",
+          "enum": ["bool", "i32", "i64", "u32", "f64", "String"]
+        },
+        "initialValue": { "type": "string" },
+        "description": { "type": "string" }
+      },
+      "pointers": {
+        "base": "/1"
+      },
+      "mixins": [],
+      "registry": {
+        "position": { "x": 540, "y": 280 },
+        "DisplayFormat": "$name: $rustType"
+      }
+    },
+    {
+      "id": "@meta:EventDef",
+      "attributes": {
+        "name": "EventDef",
+        "payloadType": "",
+        "description": ""
+      },
+      "attribute_meta": {
+        "name": { "type": "string" },
+        "payloadType": { "type": "string" },
+        "description": { "type": "string" }
+      },
+      "pointers": {
+        "base": "/1"
+      },
+      "mixins": [],
+      "registry": {
+        "position": { "x": 740, "y": 280 },
+        "DisplayFormat": "$name"
+      }
+    }
+  ]
+}

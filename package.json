@@ -1,0 +1,32 @@
+{
+  "name": "rusty",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Rust state-machine modeling & simulation studio built on WebGME and webgme-git",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js",
+    "start:dev": "NODE_ENV=dev node app.js",
+    "build:seed": "node scripts/build-seed.js",
+    "test": "node --test test/**/*.test.js"
+  },
+  "keywords": [
+    "webgme",
+    "webgme-git",
+    "rust",
+    "state-machine",
+    "simulation",
+    "modeling"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "monaco-editor": "^0.57.0",
+    "webgme": "^2.23.0",
+    "webgme-git": "file:../webgme-git"
+  }
+}

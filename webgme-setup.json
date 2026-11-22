@@ -1,0 +1,42 @@
+{
+  "components": {
+    "addons": {},
+    "decorators": {},
+    "layouts": {},
+    "plugins": {
+      "GenerateRustCrate": {
+        "src": "src/plugins/GenerateRustCrate",
+        "test": "test"
+      }
+    },
+    "routers": {
+      "gitrouter": {
+        "src": "src/routers/GitRouterAdapter/GitRouterAdapter.js",
+        "mount": "routers/gitrouter"
+      },
+      "rustsim": {
+        "src": "src/routers/RustSimRouter/RustSimRouter.js",
+        "mount": "routers/rustsim"
+      },
+      "studio": {
+        "src": "src/routers/StudioRouter/StudioRouter.js",
+        "mount": "routers/studio"
+      }
+    },
+    "seeds": {
+      "RustySeed": {
+        "src": "seed"
+      }
+    },
+    "visualizers": {}
+  },
+  "dependencies": {
+    "addons": {},
+    "decorators": {},
+    "layouts": {},
+    "plugins": {},
+    "routers": {},
+    "seeds": {},
+    "visualizers": {}
+  }
+}
