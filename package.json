@@ -8,6 +8,10 @@
     "start": "node app.js",
     "start:dev": "NODE_ENV=dev node app.js",
     "build:seed": "node scripts/build-seed.js",
+    "sync:examples": "node scripts/sync-examples.js",
+    "docs:dev": "vitepress dev docs",
+    "docs:build": "DOCS_BASE=/routers/studio/docs/ vitepress build docs",
+    "docs:preview": "DOCS_BASE=/routers/studio/docs/ vitepress preview docs",
     "test": "node --test test/**/*.test.js"
   },
   "keywords": [
@@ -28,5 +32,8 @@
     "monaco-editor": "^0.57.0",
     "webgme": "^2.23.0",
     "webgme-git": "file:../webgme-git"
+  },
+  "devDependencies": {
+    "vitepress": "^1.6.4"
   }
 }

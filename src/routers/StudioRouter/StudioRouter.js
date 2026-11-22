@@ -18,6 +18,7 @@ let initialized = false;
 
 const PUBLIC_DIR = path.join(__dirname, "public");
 const COMMON_DIR = path.resolve(__dirname, "../../common");
+const DOCS_DIST_DIR = path.resolve(__dirname, "../../../docs/.vitepress/dist");
 
 function resolveMonacoVsDir() {
   const candidates = [
@@ -45,6 +46,20 @@ function initialize(middlewareOpts) {
 
   // Shared UMD modules (single source of truth for Node + Browser)
   router.use("/common", express.static(COMMON_DIR));
+
+  // Built VitePress documentation & interactive tutorials
+  if (fs.existsSync(DOCS_DIST_DIR)) {
+    router.use("/docs", express.static(DOCS_DIST_DIR, { maxAge: "1h" }));
+  } else {
+    router.use("/docs", (_req, res) => {
+      res
+        .status(200)
+        .type("html")
+        .send(
+          '<!doctype html><html><body style="font-family:sans-serif;background:#0d1117;color:#e6edf3;padding:32px"><h2>Rusty Docs Not Built Yet</h2><p>Run <code>npm run docs:build</code> (or <code>npm run docs:dev</code>) to build the VitePress tutorials.</p></body></html>',
+        );
+    });
+  }
 
   // Runtime metadata for the Studio SPA
   router.get("/api/info", (_req, res) => {

@@ -45,6 +45,145 @@
     return depth === 0 ? clean.slice(start, idx - 1).trim() : "";
   }
 
+  function __r_round(x) {
+    return x >= 0 ? Math.floor(x + 0.5) : Math.ceil(x - 0.5);
+  }
+  function __r_abs(x) {
+    return Math.abs(x);
+  }
+  function __r_floor(x) {
+    return Math.floor(x);
+  }
+  function __r_ceil(x) {
+    return Math.ceil(x);
+  }
+  function __r_clamp(x, lo, hi) {
+    return Math.min(Math.max(x, lo), hi);
+  }
+  function __r_min(a, b) {
+    return Math.min(a, b);
+  }
+  function __r_max(a, b) {
+    return Math.max(a, b);
+  }
+
+  function findNextOutsideStrings(str, targetRe, startFrom = 0) {
+    let inStr = false;
+    for (let i = startFrom; i < str.length; i++) {
+      const ch = str[i];
+      if (ch === '"' && str[i - 1] !== "\\") {
+        inStr = !inStr;
+        continue;
+      }
+      if (inStr) continue;
+      const m = targetRe.exec(str.slice(i));
+      if (m && m.index === 0) {
+        return { index: i, match: m };
+      }
+    }
+    return null;
+  }
+
+  function findMatchingParen(str, openIdx) {
+    let depth = 0;
+    let inStr = false;
+    for (let i = openIdx; i < str.length; i++) {
+      const ch = str[i];
+      if (ch === '"' && str[i - 1] !== "\\") {
+        inStr = !inStr;
+        continue;
+      }
+      if (inStr) continue;
+      if (ch === "(") depth++;
+      else if (ch === ")") {
+        depth--;
+        if (depth === 0) return i;
+      }
+    }
+    return -1;
+  }
+
+  function translateRustIfExpr(expr) {
+    let out = String(expr || "");
+    for (let guard = 0; guard < 32; guard++) {
+      const found = findNextOutsideStrings(out, /\bif\b(?=\s|\()/);
+      if (!found) break;
+      const ifIdx = found.index;
+      // Ensure `if` is not part of an identifier
+      if (ifIdx > 0 && /[a-zA-Z0-9_]/.test(out[ifIdx - 1])) break;
+      const brace1 = out.indexOf("{", ifIdx + 2);
+      if (brace1 === -1) break;
+      const close1 = findMatchingBrace(out, brace1);
+      if (close1 === -1) break;
+      const after1 = out.slice(close1 + 1);
+      const elseMatch = /^\s*else\s*\{/.exec(after1);
+      if (!elseMatch) break;
+      const brace2 = close1 + 1 + elseMatch[0].length - 1;
+      const close2 = findMatchingBrace(out, brace2);
+      if (close2 === -1) break;
+
+      const cond = out.slice(ifIdx + 2, brace1).trim();
+      const thenBody = out.slice(brace1 + 1, close1).trim();
+      const elseBody = out.slice(brace2 + 1, close2).trim();
+      const ternary = `((${cond}) ? (${thenBody}) : (${elseBody}))`;
+      out = out.slice(0, ifIdx) + ternary + out.slice(close2 + 1);
+    }
+    return out;
+  }
+
+  function findReceiverStart(str, dotIdx) {
+    let pos = dotIdx - 1;
+    while (pos >= 0 && /\s/.test(str[pos])) pos--;
+    while (pos >= 0) {
+      const ch = str[pos];
+      if (/[a-zA-Z0-9_.]/.test(ch)) {
+        pos--;
+        continue;
+      }
+      if (ch === ")") {
+        let depth = 1;
+        let inStr = false;
+        pos--;
+        while (pos >= 0 && depth > 0) {
+          const c = str[pos];
+          if (c === '"' && str[pos - 1] !== "\\") inStr = !inStr;
+          if (!inStr) {
+            if (c === ")") depth++;
+            else if (c === "(") depth--;
+          }
+          pos--;
+        }
+        // Include preceding function name or receiver chain if any
+        continue;
+      }
+      break;
+    }
+    return pos + 1;
+  }
+
+  function translateRustMethods(expr) {
+    let out = String(expr || "");
+    const methodRe = /^\.(round|abs|floor|ceil|clamp|min|max)\s*\(/;
+    for (let guard = 0; guard < 64; guard++) {
+      const found = findNextOutsideStrings(out, methodRe);
+      if (!found) break;
+      const dotIdx = found.index;
+      const method = found.match[1];
+      const openParen = dotIdx + found.match[0].length - 1;
+      const closeParen = findMatchingParen(out, openParen);
+      if (closeParen === -1) break;
+
+      const recvStart = findReceiverStart(out, dotIdx);
+      const recv = out.slice(recvStart, dotIdx).trim();
+      const argsStr = out.slice(openParen + 1, closeParen).trim();
+      const replacement = argsStr
+        ? `__r_${method}(${recv}, ${argsStr})`
+        : `__r_${method}(${recv})`;
+      out = out.slice(0, recvStart) + replacement + out.slice(closeParen + 1);
+    }
+    return out;
+  }
+
   function evalRustExpr(expr, globals, localVars) {
     const trimmed = String(expr || "").trim();
     if (!trimmed) return undefined;
@@ -72,11 +211,15 @@
     if (strFrom) return strFrom[1];
 
     // Safe JS expression translation for Rust arithmetic/boolean/comparison expressions
-    const jsExpr = trimmed
+    let jsExpr = trimmed
       .replace(/\btrue\b/g, "true")
       .replace(/\bfalse\b/g, "false")
       .replace(/\.to_string\(\)/g, "")
-      .replace(/\bas\s+(?:i32|i64|u32|u64|usize|f32|f64)\b/g, "");
+      .replace(/\bas\s+(?:i32|i64|u32|u64|usize|f32|f64)\b/g, "")
+      .replace(/(?<![a-zA-Z0-9_)\]])\*([a-zA-Z_][a-zA-Z0-9_]*)/g, "$1");
+
+    jsExpr = translateRustIfExpr(jsExpr);
+    jsExpr = translateRustMethods(jsExpr);
 
     // Allow only safe characters & identifiers (no Function/window/process/eval/assignment)
     if (/\b(?:window|globalThis|process|require|import|eval|Function|fetch|constructor|__proto__|prototype)\b/.test(jsExpr)) {
@@ -85,8 +228,29 @@
 
     const keys = Object.keys(localVars || {});
     const vals = keys.map((k) => localVars[k]);
-    const fn = new Function("globals", ...keys, `"use strict"; return (${jsExpr});`);
-    return fn(globals, ...vals);
+    const fn = new Function(
+      "globals",
+      "__r_round",
+      "__r_abs",
+      "__r_floor",
+      "__r_ceil",
+      "__r_clamp",
+      "__r_min",
+      "__r_max",
+      ...keys,
+      `"use strict"; return (${jsExpr});`,
+    );
+    return fn(
+      globals,
+      __r_round,
+      __r_abs,
+      __r_floor,
+      __r_ceil,
+      __r_clamp,
+      __r_min,
+      __r_max,
+      ...vals,
+    );
   }
 
   function findMatchingBrace(str, openIdx) {
@@ -145,6 +309,7 @@
       // 3. Statement ending with ';' or end of block
       let stmtEnd = -1;
       let parenDepth = 0;
+      let braceDepth = 0;
       let inStr = false;
       for (let j = i; j < src.length; j++) {
         const ch = src[j];
@@ -152,7 +317,9 @@
         if (inStr) continue;
         if (ch === "(") parenDepth++;
         else if (ch === ")") parenDepth--;
-        else if (ch === ";" && parenDepth === 0) {
+        else if (ch === "{") braceDepth++;
+        else if (ch === "}") braceDepth--;
+        else if (ch === ";" && parenDepth === 0 && braceDepth === 0) {
           stmtEnd = j;
           break;
         }
@@ -165,8 +332,8 @@
       // Ignore `let _ = globals;`
       if (/^let\s+_\s*=/.test(stmt)) continue;
 
-      // Local let binding: `let x = expr`
-      const letMatch = /^let\s+(?:mut\s+)?([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*([\s\S]+)$/.exec(stmt);
+      // Local let binding: `let x = expr` or `let x: T = expr`
+      const letMatch = /^let\s+(?:mut\s+)?([a-zA-Z_][a-zA-Z0-9_]*)(?:\s*:\s*[^=]+)?\s*=\s*([\s\S]+)$/.exec(stmt);
       if (letMatch) {
         localVars[letMatch[1]] = evalRustExpr(letMatch[2], globals, localVars);
         continue;
@@ -302,7 +469,7 @@
         // Support Event::Foo or Event::Foo(val) or Foo | Bar
         const alts = pattern.split("|").map((p) => p.trim());
         for (const alt of alts) {
-          const evMatch = /^(?:Event::)?([A-Za-z0-9_]+)(?:\(\s*([a-zA-Z0-9_]+)\s*\))?$/.exec(alt);
+          const evMatch = /^(?:Event::)?([A-Za-z0-9_]+)(?:\(\s*&?([a-zA-Z0-9_]+)\s*\))?$/.exec(alt);
           if (evMatch && evMatch[1] === evPascal) {
             matched = true;
             if (evMatch[2] && evMatch[2] !== "_") {

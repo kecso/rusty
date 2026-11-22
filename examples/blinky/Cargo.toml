@@ -1,0 +1,13 @@
+[package]
+name = "blinky-controller"
+version = "0.1.0"
+edition = "2021"
+description = "Hello-world Rust state machine demonstrating WebGME topology + webgme-git Rust state files + dynamic simulation."
+
+[lib]
+name = "blinky_controller"
+path = "src/lib.rs"
+
+[[bin]]
+name = "blinky-controller"
+path = "src/main.rs"

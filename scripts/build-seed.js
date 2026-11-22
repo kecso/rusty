@@ -12,7 +12,7 @@
 const fs = require("fs");
 const path = require("path");
 const { execFileSync } = require("child_process");
-const { getStarterBlinkyModel } = require("../src/common/rustContract");
+const { getStarterBlinkyModel, getSmartThermostatModel } = require("../src/common/rustContract");
 
 const REPO_ROOT = path.resolve(__dirname, "..");
 const IMPORTER_ROOT = path.resolve(REPO_ROOT, "../webgme-json-importer");
@@ -56,6 +56,78 @@ const storageUtils = testFixture.requirejs("common/storage/util");
 
 function findByName(core, nodes, name) {
   return nodes.find((n) => core.getAttribute(n, "name") === name);
+}
+
+function instantiateMachine(core, root, meta, model, rootPos) {
+  const { stateMachine, stateMeta, transitionMeta, globalVarMeta, eventDefMeta } = meta;
+
+  const smNode = core.createNode({ parent: root, base: stateMachine });
+  core.setAttribute(smNode, "name", model.name);
+  core.setAttribute(smNode, "crateName", model.crateName);
+  core.setAttribute(smNode, "description", model.description);
+  core.setAttribute(smNode, "tickMs", model.tickMs);
+  core.setAttribute(smNode, "gitOwner", model.gitOwner);
+  core.setAttribute(smNode, "gitRepo", model.gitRepo);
+  core.setAttribute(smNode, "gitBranch", model.gitBranch);
+  core.setAttribute(smNode, "gitPath", model.gitPath);
+  core.setAttribute(smNode, "gitArtifactType", "dir");
+  core.setRegistry(smNode, "position", rootPos || { x: 240, y: 120 });
+
+  // Globals
+  (model.globals || []).forEach((g, idx) => {
+    const gNode = core.createNode({ parent: smNode, base: globalVarMeta });
+    core.setAttribute(gNode, "name", g.name);
+    core.setAttribute(gNode, "rustType", g.rustType);
+    core.setAttribute(gNode, "initialValue", g.initialValue);
+    core.setAttribute(gNode, "description", g.description || "");
+    core.setRegistry(gNode, "position", { x: 80, y: 420 + idx * 55 });
+  });
+
+  // Events
+  (model.events || []).forEach((e, idx) => {
+    const eNode = core.createNode({ parent: smNode, base: eventDefMeta });
+    core.setAttribute(eNode, "name", e.name);
+    core.setAttribute(eNode, "payloadType", e.payloadType || "");
+    core.setAttribute(eNode, "description", e.description || "");
+    core.setRegistry(eNode, "position", { x: 320, y: 420 + idx * 55 });
+  });
+
+  // States
+  const stateNodesByName = new Map();
+  for (const st of model.states || []) {
+    const sNode = core.createNode({ parent: smNode, base: stateMeta });
+    core.setAttribute(sNode, "name", st.name);
+    core.setAttribute(sNode, "description", st.description || "");
+    core.setAttribute(sNode, "isInitial", Boolean(st.isInitial));
+    core.setAttribute(sNode, "isFinal", Boolean(st.isFinal));
+    core.setAttribute(sNode, "color", st.color || "#38bdf8");
+    core.setAttribute(sNode, "codeCache", st.code || "");
+    core.setAttribute(sNode, "gitOwner", model.gitOwner);
+    core.setAttribute(sNode, "gitRepo", model.gitRepo);
+    core.setAttribute(sNode, "gitBranch", model.gitBranch);
+    core.setAttribute(sNode, "gitPath", st.gitPath);
+    core.setAttribute(sNode, "gitArtifactType", "file");
+    core.setAttribute(sNode, "gitBaseCommitSha", "");
+    core.setRegistry(sNode, "position", st.position || { x: 160, y: 160 });
+    stateNodesByName.set(st.name, sNode);
+  }
+
+  // Transitions
+  for (const tr of model.transitions || []) {
+    const srcNode = stateNodesByName.get(tr.srcName);
+    const dstNode = stateNodesByName.get(tr.dstName);
+    if (!srcNode || !dstNode) continue;
+    const tNode = core.createNode({ parent: smNode, base: transitionMeta });
+    core.setAttribute(tNode, "name", tr.name);
+    core.setAttribute(tNode, "event", tr.event);
+    core.setAttribute(tNode, "guard", tr.guard || "");
+    core.setAttribute(tNode, "action", tr.action || "");
+    core.setAttribute(tNode, "priority", tr.priority);
+    core.setPointer(tNode, "src", srcNode);
+    core.setPointer(tNode, "dst", dstNode);
+  }
+
+  return core.getPath(smNode);
 }
 
 async function applyRustySeed(core, root, language) {
@@ -120,73 +192,11 @@ async function applyRustySeed(core, root, language) {
     },
   ]);
 
-  // Instantiate starter BlinkyController model so new projects are immediately runnable!
-  const starter = getStarterBlinkyModel();
-  const smNode = core.createNode({ parent: root, base: stateMachine });
-  core.setAttribute(smNode, "name", starter.name);
-  core.setAttribute(smNode, "crateName", starter.crateName);
-  core.setAttribute(smNode, "description", starter.description);
-  core.setAttribute(smNode, "tickMs", starter.tickMs);
-  core.setAttribute(smNode, "gitOwner", starter.gitOwner);
-  core.setAttribute(smNode, "gitRepo", starter.gitRepo);
-  core.setAttribute(smNode, "gitBranch", starter.gitBranch);
-  core.setAttribute(smNode, "gitPath", starter.gitPath);
-  core.setAttribute(smNode, "gitArtifactType", "dir");
-  core.setRegistry(smNode, "position", { x: 380, y: 120 });
+  const meta = { stateMachine, stateMeta, transitionMeta, globalVarMeta, eventDefMeta };
 
-  // Globals
-  starter.globals.forEach((g, idx) => {
-    const gNode = core.createNode({ parent: smNode, base: globalVarMeta });
-    core.setAttribute(gNode, "name", g.name);
-    core.setAttribute(gNode, "rustType", g.rustType);
-    core.setAttribute(gNode, "initialValue", g.initialValue);
-    core.setAttribute(gNode, "description", g.description);
-    core.setRegistry(gNode, "position", { x: 80, y: 420 + idx * 60 });
-  });
-
-  // Events
-  starter.events.forEach((e, idx) => {
-    const eNode = core.createNode({ parent: smNode, base: eventDefMeta });
-    core.setAttribute(eNode, "name", e.name);
-    core.setAttribute(eNode, "payloadType", e.payloadType);
-    core.setAttribute(eNode, "description", e.description);
-    core.setRegistry(eNode, "position", { x: 320, y: 420 + idx * 60 });
-  });
-
-  // States
-  const stateNodesByName = new Map();
-  for (const st of starter.states) {
-    const sNode = core.createNode({ parent: smNode, base: stateMeta });
-    core.setAttribute(sNode, "name", st.name);
-    core.setAttribute(sNode, "description", st.description);
-    core.setAttribute(sNode, "isInitial", Boolean(st.isInitial));
-    core.setAttribute(sNode, "isFinal", Boolean(st.isFinal));
-    core.setAttribute(sNode, "color", st.color);
-    core.setAttribute(sNode, "codeCache", st.code);
-    core.setAttribute(sNode, "gitOwner", starter.gitOwner);
-    core.setAttribute(sNode, "gitRepo", starter.gitRepo);
-    core.setAttribute(sNode, "gitBranch", starter.gitBranch);
-    core.setAttribute(sNode, "gitPath", st.gitPath);
-    core.setAttribute(sNode, "gitArtifactType", "file");
-    core.setAttribute(sNode, "gitBaseCommitSha", "");
-    core.setRegistry(sNode, "position", st.position);
-    stateNodesByName.set(st.name, sNode);
-  }
-
-  // Transitions
-  for (const tr of starter.transitions) {
-    const srcNode = stateNodesByName.get(tr.srcName);
-    const dstNode = stateNodesByName.get(tr.dstName);
-    if (!srcNode || !dstNode) continue;
-    const tNode = core.createNode({ parent: smNode, base: transitionMeta });
-    core.setAttribute(tNode, "name", tr.name);
-    core.setAttribute(tNode, "event", tr.event);
-    core.setAttribute(tNode, "guard", tr.guard || "");
-    core.setAttribute(tNode, "action", tr.action || "");
-    core.setAttribute(tNode, "priority", tr.priority);
-    core.setPointer(tNode, "src", srcNode);
-    core.setPointer(tNode, "dst", dstNode);
-  }
+  // Instantiate both tutorial example StateMachines so new projects start rich and runnable
+  const blinkyPath = instantiateMachine(core, root, meta, getStarterBlinkyModel(), { x: 240, y: 120 });
+  const thermostatPath = instantiateMachine(core, root, meta, getSmartThermostatModel(), { x: 520, y: 120 });
 
   return {
     metaPaths: {
@@ -197,7 +207,11 @@ async function applyRustySeed(core, root, language) {
       GlobalVar: core.getPath(globalVarMeta),
       EventDef: core.getPath(eventDefMeta),
     },
-    starterMachinePath: core.getPath(smNode),
+    starterMachinePath: blinkyPath,
+    starterMachinePaths: {
+      BlinkyController: blinkyPath,
+      SmartThermostat: thermostatPath,
+    },
   };
 }
 

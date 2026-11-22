@@ -62,6 +62,10 @@ describe("Rusty WebGME Routers", () => {
 
     const monacoRes = await fetch(`${baseUrl}/routers/studio/vendor/monaco/vs/loader.js`);
     assert.equal(monacoRes.status, 200);
+
+    const docsRes = await fetch(`${baseUrl}/routers/studio/docs/`);
+    assert.equal(docsRes.status, 200);
+    assert.match(await docsRes.text(), /Rusty/);
   });
 
   it("serves GitRouterAdapter /status", async () => {

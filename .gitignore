@@ -7,3 +7,5 @@ dist/
 .env.local
 .vite/
 *.wasm
+docs/.vitepress/cache/
+docs/.vitepress/dist/

@@ -1,0 +1,13 @@
+[package]
+name = "smart-thermostat"
+version = "0.1.0"
+edition = "2021"
+description = "Tutorial HVAC controller showcasing thermal physics computation, f64 payload events, self-emitted safety alerts (Outcome::Emit), hysteresis deadband, and safe lockout recovery."
+
+[lib]
+name = "smart_thermostat"
+path = "src/lib.rs"
+
+[[bin]]
+name = "smart-thermostat"
+path = "src/main.rs"
