@@ -2,6 +2,8 @@
 
 **`SmartThermostat`** (`examples/smart-thermostat/`) is Rusty's comprehensive tutorial model. It is easy to follow — a room HVAC thermostat — while exercising every major feature of WebGME, Monaco edit-time checks, `webgme-git`, codegen, and dynamic simulation.
 
+![SmartThermostat physics simulation and native Rust parity](/images/demo-smart-thermostat.gif)
+
 ## What `SmartThermostat` Demonstrates
 
 - **Rich `Globals` types**: `f64` (`current_temp_c`, `target_temp_c`, `hysteresis_c`, `ambient_temp_c`, `energy_wh`), `u32` (`cycle_ticks`, `max_cycle_ticks`), `i32` (`fault_code`), `bool` (`eco_mode`), and `String` (`status_note`).
@@ -35,7 +37,7 @@
 ## Step 1: Switch to `SmartThermostat`
 
 1. In Rusty Studio's top bar, change the **Machine** dropdown from `BlinkyController` to **`SmartThermostat`**.
-2. Notice the **GitArtifactLink** bar updates to `kecso/rusty@dev` (`examples/smart-thermostat/src/states`).
+2. Notice the **GitArtifactLink** bar shows `rusty@dev` (`examples/smart-thermostat/src/states`), ready for you to bind `<your-username>` via **Bind GitHub Repo…** when testing GitHub sync.
 3. Switch the right pane to **Dynamic Simulator**. Initial state is **`Standby`** with:
    - `current_temp_c = 21`
    - `target_temp_c = 22`
@@ -86,4 +88,4 @@ if globals.current_temp_c >= 40.0 || globals.cycle_ticks >= globals.max_cycle_ti
    ```rust
    let watts = if globals.eco_mode { 15.0 } else { 30.0 };
    ```
-3. Click **Save Draft to WebGME** (or press **`⌘S`** to commit & push to `dev`), then click **✓ Verify with rustc** and re-run the **Dynamic Simulator** to see `energy_wh` increase by `30 Wh` per tick!
+3. Click **Save Draft to WebGME** (or press **`⌘S`** to commit & push to your fork's `dev` branch after binding `<your-username>/rusty` in [Tutorial 4](./04-github-sync-dev.md)), then click **✓ Verify with rustc** and re-run the **Dynamic Simulator** to see `energy_wh` increase by `30 Wh` per tick!

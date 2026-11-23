@@ -37,7 +37,7 @@ function runCargoTrace(crateDir, events) {
 describe("Tutorial Examples (BlinkyController & SmartThermostat)", () => {
   it("passes RustyAnalyzer with 0 errors and 0 warnings across all BlinkyController & SmartThermostat states", () => {
     for (const model of [getStarterBlinkyModel(), getSmartThermostatModel()]) {
-      assert.equal(model.gitOwner, "kecso");
+      assert.equal(model.gitOwner, "");
       assert.equal(model.gitRepo, "rusty");
       assert.equal(model.gitBranch, "dev");
 

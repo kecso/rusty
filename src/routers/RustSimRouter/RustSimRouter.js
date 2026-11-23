@@ -85,7 +85,11 @@ function initialize(/* middlewareOpts */) {
   if (initialized) return;
   initialized = true;
 
-  router.use(express.json({ limit: "2mb" }));
+  const jsonParser = express.json({ limit: "2mb" });
+  router.use((req, res, next) => {
+    if (req._body || req.readableEnded || !req.readable) return next();
+    return jsonParser(req, res, next);
+  });
 
   router.get("/health", async (_req, res) => {
     const [rustc, cargo] = await Promise.all([

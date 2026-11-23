@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+  <base href="/" />
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Rusty Studio — WebGME + webgme-git Rust State Machine IDE</title>
@@ -413,7 +414,8 @@
   <!-- Toast Stack -->
   <div id="toastStack" class="toast-stack"></div>
 
-  <!-- WebGME Browser Client Bundle (served directly by WebGME standaloneServer) -->
+  <!-- Socket.IO + WebGME Browser Client Bundle (loaded before Monaco AMD loader) -->
+  <script src="/socket.io/socket.io.js"></script>
   <script src="/gme-dist/webgme.classes.build.js"></script>
   <!-- Shared Rusty Common Modules -->
   <script src="/routers/studio/common/rustContract.js"></script>

@@ -12,6 +12,7 @@ const ROOT = path.resolve(__dirname, "..");
 
 config.server.port = Number(process.env.PORT || 8888);
 config.mongo.uri = process.env.MONGO_URI || "mongodb://127.0.0.1:27017/rusty_webgme";
+config.server.bodyParser = { json: { limit: "10mb" } };
 
 // Register Rusty seeds (RustySeed.webgmex) + webgme-git's git-seed.webgmex
 config.seedProjects.enable = true;

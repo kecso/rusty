@@ -9,3 +9,4 @@ dist/
 *.wasm
 docs/.vitepress/cache/
 docs/.vitepress/dist/
+blob-local-storage/

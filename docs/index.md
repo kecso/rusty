@@ -30,3 +30,17 @@ features:
     title: Dynamic Sim + Native Rust Parity
     details: Step or auto-tick in the browser with live globals injection, then verify 100% behavioral parity by compiling and running the generated Cargo crate via rustc.
 ---
+
+## See Rusty Studio in Action
+
+### Live Browser Simulation + Native `cargo` Parity
+
+Switch between seeded state machines, step physics & payload events in the browser with glowing SVG state highlights, and verify 100% behavioral parity against compiled Rust (`rustc` / `cargo`):
+
+![SmartThermostat physics simulation and native Rust parity](/images/demo-smart-thermostat.gif)
+
+### Sub-Millisecond Monaco Edit-Time Checks + `rustc` Verification
+
+As you type Rust state handlers, `RustyAnalyzer` validates globals, payload events, and WebGME transition topology in `< 1 ms`, then overlays full `cargo check` diagnostics on demand:
+
+![Monaco edit-time checks and rustc verification](/images/demo-monaco-edit-checks.gif)

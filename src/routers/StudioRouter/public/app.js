@@ -185,7 +185,6 @@
   async function init() {
     bindUIEvents();
 
-    // Initialize embedded Monaco Editor with live WebGME IntelliSense & instant edit-time checks
     monacoEditor = new window.MonacoStateEditor($("monacoEditorHost"), {
       onChange() {
         const st = selectedStateObj();
@@ -201,7 +200,6 @@
         saveOrCommitActiveState();
       },
     });
-    monacoEditor.init();
 
     // Load studio info + rustc health + gitrouter status in parallel
     try {
@@ -222,6 +220,9 @@
       toast(`WebGME connection failed: ${err.message}`, "err");
       return;
     }
+
+    // Initialize Monaco AMD loader after WebGME Socket.IO connects so window.define does not intercept socket.io.js
+    monacoEditor.init();
 
     bridge.onModelChange((machines) => {
       state.machines = machines;

@@ -2,6 +2,8 @@
 
 Rusty Studio embeds **Monaco Editor** (`0.57.0`) directly inside the state inspector and pairs it with **`RustyAnalyzer`** (`src/common/rustAnalyzer.js`) for **sub-millisecond edit-time verification** against your live WebGME model.
 
+![Monaco edit-time checks and rustc verification](/images/demo-monaco-edit-checks.gif)
+
 ## Why Not Wait for `cargo check` on Every Keystroke?
 
 Running `cargo check` spawns a subprocess (~300–1000ms) and only catches errors *after* regenerating the crate. By contrast, `RustyAnalyzer` inspects your live WebGME symbol tables (`GlobalVar`, `EventDef`, `State`, `Transition`) in **< 1 millisecond** in the browser on a 55ms keystroke debounce. You get:

@@ -1,21 +1,21 @@
 # Rusty Tutorial Examples
 
-Self-contained, runnable Rust state-machine crates synchronized with Rusty Studio's `RustySeed.webgmex` and pre-bound to the `dev` sandbox branch of `kecso/rusty`.
+Self-contained, runnable Rust state-machine crates synchronized with Rusty Studio's `RustySeed.webgmex` and pre-configured for the `dev` sandbox branch of **your own fork** (`<your-username>/rusty`).
 
 | Directory | StateMachine | Highlights |
 | --- | --- | --- |
 | [`blinky/`](./blinky) | `BlinkyController` | Hello-world GPIO blink loop, thermal limit guard, `Fault` / `Reset` recovery |
 | [`smart-thermostat/`](./smart-thermostat) | `SmartThermostat` | Physics-computing HVAC controller: `f64` thermal drift & `energy_wh`, payload events (`SetTarget:26.0`, `SetAmbient:35.0`), `Outcome::Emit(Event::OverheatAlert)`, `Cooldown`, `SafeLockout` |
 
-## Why the `dev` Branch?
+## Why Fork & Use a `dev` Branch?
 
-Both models in `RustySeed.webgmex` bind their `GitArtifactLink` attributes to:
-- `gitOwner`: `kecso`
+In `RustySeed.webgmex`, both models already have their repository name, branch, and file paths pre-filled:
+- `gitOwner`: `""` *(click **Bind GitHub Repo…** in Studio to bind `<your-username>`)*
 - `gitRepo`: `rusty`
 - `gitBranch`: `dev`
 - `gitPath`: `examples/<name>/src/states/<state>.rs`
 
-This lets you test **Pull from GitHub**, live **Monaco editing**, **Commit & Push (`⌘S`)**, **auto-rebase**, and **HTTP 409 3-way merge** directly against `dev` without modifying `main`.
+By forking `kecso/rusty` and creating a `dev` branch in your fork, you can safely test **Pull from GitHub**, live **Monaco editing**, **Commit & Push (`⌘S`)**, **auto-rebase**, and **HTTP 409 3-way merge** without touching `main` or needing push access to upstream.
 
 ## Running Natively with Cargo
 

@@ -2,9 +2,11 @@
 
 **`BlinkyController`** (`examples/blinky/`) is Rusty's "hello world" hardware state machine. In 5 minutes you will inspect its WebGME topology, simulate a full blink loop, inject a live thermal fault, and verify parity against compiled native Rust.
 
+![BlinkyController simulation and native Rust parity](/images/demo-overview-blinky.gif)
+
 ## 1. Open Rusty Studio
 
-Start the server (`npm start`) and open `http://127.0.0.1:8888/routers/studio`.
+Start the server (`npm start` from your cloned fork) and open `http://127.0.0.1:8888/routers/studio`.
 
 On first boot, Studio seeds **`RustyDemo`** from `RustySeed.webgmex` and selects **`BlinkyController`**. You will see four states on the SVG canvas:
 
@@ -16,7 +18,7 @@ On first boot, Studio seeds **`RustyDemo`** from `RustySeed.webgmex` and selects
 ## 2. Inspect State Code in Monaco
 
 1. Click **`LedOn`** on the canvas or in the left **States** sidebar.
-2. In the right **Inspector & Rust** pane, review its `GitArtifactLink` coordinates (`kecso/rusty`, branch `dev`, path `examples/blinky/src/states/led_on.rs`).
+2. In the right **Inspector & Rust** pane, review its `GitArtifactLink` coordinates (`gitRepo = rusty`, `gitBranch = dev`, `gitPath = examples/blinky/src/states/led_on.rs`, with `gitOwner` bound to `<your-username>` when you connect your fork in [Tutorial 4](./04-github-sync-dev.md)).
 3. Look at the Monaco editor and analyzer status bar (`✓ 0 errors` in under 1ms).
 
 ## 3. Run the Dynamic Browser Simulator

@@ -8,7 +8,7 @@ Both `StateMachine` and `State` inherit attributes from the abstract `GitArtifac
 
 | Attribute | Meaning on `StateMachine` | Meaning on `State` |
 | --- | --- | --- |
-| `gitOwner` | Repository owner (e.g. `kecso`) | Repository owner (inherited or overridden) |
+| `gitOwner` | Repository owner (e.g. `<your-username>` via **Bind GitHub Repo…**) | Repository owner (inherited or overridden) |
 | `gitRepo` | Repository name (e.g. `rusty`) | Repository name |
 | `gitBranch` | Target branch (e.g. `dev`) | Target branch |
 | `gitPath` | States folder (e.g. `examples/smart-thermostat/src/states`) | File path (e.g. `examples/smart-thermostat/src/states/heating.rs`) |

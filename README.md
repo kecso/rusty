@@ -8,16 +8,18 @@ Rust state-machine modeling & simulation studio built as the poster-child **WebG
   1. **Instant In-Browser Dynamic Simulator** (`src/common/rustSimEngine.js`): executes `on_enter` / `on_event` / `on_exit`, payload events, `Outcome::Emit(...)`, math/clamp expressions, and transition guards live with animated SVG state/edge highlights and fault injection.
   2. **Real `rustc` / `cargo` Verification & Native Trace Parity** (`/routers/rustsim`): generates a standalone Rust crate and runs `cargo check` / `cargo run` to overlay compiler markers in Monaco and verify 100% behavioral parity with the browser simulation.
 
-## Tutorial Examples & Safe `dev` Sandbox Branch
+![Rusty Studio SmartThermostat Demo](./docs/public/images/demo-smart-thermostat.gif)
 
-Two complete, runnable tutorial models are pre-seeded in `seed/RustySeed.webgmex` and materialized under [`examples/`](./examples/README.md), with their `GitArtifactLink` coordinates bound to `kecso/rusty` on the **`dev`** branch so you can test live GitHub fetch/commit/push without touching `main`:
+## Tutorial Examples & Fork-First `dev` Sandbox Workflow
+
+Two complete, runnable tutorial models are pre-seeded in `seed/RustySeed.webgmex` and materialized under [`examples/`](./examples/README.md), with `gitRepo = rusty` and `gitBranch = dev` (`gitOwner` left blank so you bind **your own fork** `<your-username>/rusty@dev` via **Bind GitHub Repo…** to test live pushes without needing write access to `kecso/rusty`):
 
 - [`examples/blinky/`](./examples/blinky) — **BlinkyController**: hello-world GPIO blink loop, thermal limit guard, `Fault` / `Reset` recovery.
 - [`examples/smart-thermostat/`](./examples/smart-thermostat) — **SmartThermostat**: physics-computing HVAC controller with `f64` thermal drift & `energy_wh`, payload events (`SetTarget(f64)`, `SetAmbient(f64)`), `Outcome::Emit(Event::OverheatAlert)`, `Cooldown`, and `SafeLockout`.
 
 ## Tutorial Documentation (VitePress)
 
-A complete "Read the Docs"-style interactive tutorial & reference site lives in [`docs/`](./docs/index.md):
+Browse the published docs at **[https://kecso.github.io/rusty/](https://kecso.github.io/rusty/)** or preview them locally from [`docs/`](./docs/index.md):
 
 ```bash
 npm run docs:dev     # Live local VitePress docs server
@@ -45,10 +47,17 @@ npm run docs:build   # Build static docs served at http://127.0.0.1:8888/routers
 - MongoDB (`mongod` on `127.0.0.1:27017`)
 - Rust toolchain (`rustc` + `cargo`)
 
-### 2. Install & Run (Local Dev / Guest Mode)
+### 2. Fork, Clone & Start (Local Dev / Guest Mode)
+
+Fork [`kecso/rusty`](https://github.com/kecso/rusty) on GitHub first, clone your fork, and create a `dev` sandbox branch on it:
 
 ```bash
+git clone https://github.com/<your-username>/rusty.git
 cd rusty
+git checkout -b dev
+git push -u origin dev
+git checkout main
+
 npm install
 npm run docs:build   # Optional: builds /routers/studio/docs/
 npm start
@@ -69,9 +78,9 @@ cp .env.example .env
 npm start
 ```
 
-1. Sign in with GitHub at `http://127.0.0.1:8888/profile/login`
-2. Link `kecso/rusty` to your project in `/profile`
-3. In **Rusty Studio**, select `SmartThermostat` or `BlinkyController` — both are already bound to `kecso/rusty@dev`!
+1. Install your GitHub App on `<your-username>/rusty` and sign in at `http://127.0.0.1:8888/profile/login`
+2. Link `<your-username>/rusty` to your project in `/profile`
+3. In **Rusty Studio**, click **Bind GitHub Repo…** and set `Owner = <your-username>`, `Repo = rusty`, `Branch = dev`!
 
 ## Scripts
 

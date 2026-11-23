@@ -85,7 +85,7 @@ pub fn on_exit(_globals: &mut Globals) {
       description:
         "Hello-world Rust state machine demonstrating WebGME topology + webgme-git Rust state files + dynamic simulation.",
       tickMs: 800,
-      gitOwner: "kecso",
+      gitOwner: "",
       gitRepo: "rusty",
       gitBranch: "dev",
       gitPath: "examples/blinky/src/states",
@@ -284,7 +284,7 @@ pub fn on_exit(_globals: &mut Globals) {}
       description:
         "Tutorial HVAC controller showcasing thermal physics computation, f64 payload events, self-emitted safety alerts (Outcome::Emit), hysteresis deadband, and safe lockout recovery.",
       tickMs: 700,
-      gitOwner: "kecso",
+      gitOwner: "",
       gitRepo: "rusty",
       gitBranch: "dev",
       gitPath: "examples/smart-thermostat/src/states",

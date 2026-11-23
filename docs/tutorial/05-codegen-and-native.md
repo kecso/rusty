@@ -2,6 +2,8 @@
 
 Everything you model in WebGME and edit in Monaco compiles into a standalone, zero-dependency Rust crate (`Cargo.toml`, `src/lib.rs`, `src/main.rs`, `src/types.rs`, `src/machine.rs`, `src/states/*.rs`).
 
+![Generated Rust crate preview and Bind GitHub Repo modal](/images/demo-generated-crate.gif)
+
 ## 1. Inspect the Generated Crate in Studio
 
 In Rusty Studio's center pane, click the **Generated Rust Crate** tab to browse every generated file live as you edit your WebGME model:

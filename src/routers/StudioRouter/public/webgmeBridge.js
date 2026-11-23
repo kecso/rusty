@@ -122,7 +122,7 @@
     _indexMetaNodes() {
       this.metaByName.clear();
       if (!this.client) return;
-      const metaNodes = this.client.getAllMetaNodes(true) || [];
+      const metaNodes = this.client.getAllMetaNodes(false) || [];
       for (const node of metaNodes) {
         const name = node.getAttribute("name");
         if (name) {
@@ -138,7 +138,7 @@
     _isMetaType(node, metaName) {
       const metaId = this.getMetaId(metaName);
       if (!metaId || !node) return false;
-      return this.client.isTypeOf(node.getId(), metaId);
+      return node.isTypeOf(metaId);
     }
 
     readStateMachines() {

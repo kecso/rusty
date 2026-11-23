@@ -142,6 +142,15 @@ function initialize(middlewareOpts) {
     ...(opts.gitDeps || {}),
   };
 
+  // webgme-engine uses body-parser@2 globally (does not set req._body);
+  // mark already-consumed streams so Express 4 express.json() in webgme-git skips re-reading.
+  router.use((req, _res, next) => {
+    if (req.readableEnded || !req.readable) {
+      req._body = true;
+    }
+    next();
+  });
+
   const innerRouter = webgmeGit.GitRouter.getRouter({ ...opts, gitDeps }, gmeConfig);
   router.use(innerRouter);
   logger.debug("Mounted webgme-git GitRouterAdapter");
