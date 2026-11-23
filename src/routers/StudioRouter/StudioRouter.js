@@ -31,27 +31,43 @@ function resolveMonacoVsDir() {
   return fs.existsSync(path.join(localDir, "loader.js")) ? localDir : null;
 }
 
-function initialize(middlewareOpts) {
-  if (initialized) return;
-  initialized = true;
+function resolveStudioOptions(gmeConfig) {
+  const studioOpts =
+    (gmeConfig &&
+      gmeConfig.rest &&
+      gmeConfig.rest.components &&
+      gmeConfig.rest.components.studio &&
+      gmeConfig.rest.components.studio.options) ||
+    {};
+  const serveWebGMEUI = studioOpts.serveWebGMEUI !== false;
+  const rootToStudio = Boolean(studioOpts.rootToStudio || !serveWebGMEUI);
+  return {
+    serveWebGMEUI,
+    rootToStudio,
+    webgmeUrl: serveWebGMEUI ? (rootToStudio ? "/index.html" : "/") : null,
+  };
+}
 
+function createRouter(middlewareOpts) {
+  const r = express.Router();
   const opts = middlewareOpts || {};
   const gmeConfig = opts.gmeConfig || {};
+  const ui = resolveStudioOptions(gmeConfig);
 
   // Self-hosted Monaco Editor assets (zero CDN dependency)
   const monacoVsDir = resolveMonacoVsDir();
   if (monacoVsDir) {
-    router.use("/vendor/monaco/vs", express.static(monacoVsDir, { maxAge: "1d" }));
+    r.use("/vendor/monaco/vs", express.static(monacoVsDir, { maxAge: "1d" }));
   }
 
   // Shared UMD modules (single source of truth for Node + Browser)
-  router.use("/common", express.static(COMMON_DIR));
+  r.use("/common", express.static(COMMON_DIR));
 
   // Built VitePress documentation & interactive tutorials
   if (fs.existsSync(DOCS_DIST_DIR)) {
-    router.use("/docs", express.static(DOCS_DIST_DIR, { maxAge: "1h" }));
+    r.use("/docs", express.static(DOCS_DIST_DIR, { maxAge: "1h" }));
   } else {
-    router.use("/docs", (_req, res) => {
+    r.use("/docs", (_req, res) => {
       res
         .status(200)
         .type("html")
@@ -62,7 +78,7 @@ function initialize(middlewareOpts) {
   }
 
   // Runtime metadata for the Studio SPA
-  router.get("/api/info", (_req, res) => {
+  r.get("/api/info", (_req, res) => {
     res.json({
       appName: "Rusty Studio",
       defaultSeed: (gmeConfig.seedProjects && gmeConfig.seedProjects.defaultProject) || "RustySeed",
@@ -72,7 +88,9 @@ function initialize(middlewareOpts) {
           process.env.GITHUB_APP_CLIENT_SECRET &&
           process.env.TOKEN_ENCRYPTION_KEY,
       ),
-      webgmeUrl: "/",
+      serveWebGMEUI: ui.serveWebGMEUI,
+      rootToStudio: ui.rootToStudio,
+      webgmeUrl: ui.webgmeUrl,
       profileUrl: "/profile",
       gitRouterBase: "/routers/gitrouter",
       rustSimBase: "/routers/rustsim",
@@ -80,12 +98,20 @@ function initialize(middlewareOpts) {
   });
 
   // Static Studio assets
-  router.use(express.static(PUBLIC_DIR));
+  r.use(express.static(PUBLIC_DIR));
 
   // SPA fallback
-  router.get("/", (_req, res) => {
+  r.get("/", (_req, res) => {
     res.sendFile(path.join(PUBLIC_DIR, "index.html"));
   });
+
+  return r;
+}
+
+function initialize(middlewareOpts) {
+  if (initialized) return;
+  initialized = true;
+  router.use(createRouter(middlewareOpts));
 }
 
 function start(callback) {
@@ -99,6 +125,8 @@ function stop(callback) {
 module.exports = {
   initialize,
   router,
+  createRouter,
+  resolveStudioOptions,
   start,
   stop,
 };

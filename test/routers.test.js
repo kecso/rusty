@@ -9,6 +9,7 @@ const { getStarterBlinkyModel } = require("../src/common/rustContract");
 const StudioRouter = require("../src/routers/StudioRouter/StudioRouter");
 const RustSimRouter = require("../src/routers/RustSimRouter/RustSimRouter");
 const GitRouterAdapter = require("../src/routers/GitRouterAdapter/GitRouterAdapter");
+const RootRouter = require("../src/routers/RootRouter/RootRouter");
 
 describe("Rusty WebGME Routers", () => {
   let server;
@@ -105,5 +106,73 @@ describe("Rusty WebGME Routers", () => {
     assert.equal(run.trace[1].to, "LedOn");
     assert.equal(run.trace[2].to, "LedOff");
     assert.equal(run.trace[3].to, "Idle");
+  });
+
+  it("validates default, dev, and prod configurations with expected UI deployment flags", () => {
+    const defCfg = require("../config/config.default");
+    const devCfg = require("../config/config.dev");
+    const prodCfg = require("../config/config.prod");
+
+    assert.equal(defCfg.rest.components.root.mount, "");
+    assert.equal(defCfg.rest.components.studio.options.serveWebGMEUI, true);
+    assert.equal(defCfg.rest.components.studio.options.rootToStudio, false);
+
+    assert.equal(devCfg.rest.components.studio.options.serveWebGMEUI, true);
+    assert.equal(devCfg.rest.components.studio.options.rootToStudio, false);
+
+    assert.equal(prodCfg.rest.components.studio.options.serveWebGMEUI, false);
+    assert.equal(prodCfg.rest.components.studio.options.rootToStudio, true);
+  });
+
+  it("serves RootRouter + StudioRouter accurately across dev, hybrid, and user-facing modes", async () => {
+    async function probeMode(studioOpts) {
+      const modeApp = express();
+      const gmeConfig = {
+        seedProjects: { defaultProject: "RustySeed" },
+        authentication: { enable: false },
+        rest: { components: { studio: { options: studioOpts } } },
+      };
+      modeApp.use("/", RootRouter.createRouter({ gmeConfig }));
+      modeApp.use("/routers/studio", StudioRouter.createRouter({ gmeConfig }));
+      modeApp.get(["/", "/index.html"], (_req, res) => {
+        res.status(200).send("<html><title>Generic WebGME UI</title></html>");
+      });
+
+      const srv = http.createServer(modeApp);
+      await new Promise((resolve) => srv.listen(0, "127.0.0.1", resolve));
+      const url = `http://127.0.0.1:${srv.address().port}`;
+      try {
+        const rootText = await (await fetch(`${url}/`)).text();
+        const idxText = await (await fetch(`${url}/index.html`)).text();
+        const info = await (await fetch(`${url}/routers/studio/api/info`)).json();
+        return { rootText, idxText, info };
+      } finally {
+        await new Promise((resolve) => srv.close(resolve));
+      }
+    }
+
+    // 1. Dev default: both enabled, `/` -> Generic WebGME UI
+    const devRes = await probeMode({ serveWebGMEUI: true, rootToStudio: false });
+    assert.match(devRes.rootText, /Generic WebGME UI/);
+    assert.match(devRes.idxText, /Generic WebGME UI/);
+    assert.equal(devRes.info.serveWebGMEUI, true);
+    assert.equal(devRes.info.rootToStudio, false);
+    assert.equal(devRes.info.webgmeUrl, "/");
+
+    // 2. Dev hybrid (`RUSTY_ROOT_TO_STUDIO=true`): `/` -> Studio, `/index.html` -> Generic WebGME UI
+    const hybridRes = await probeMode({ serveWebGMEUI: true, rootToStudio: true });
+    assert.match(hybridRes.rootText, /<title>Rusty Studio<\/title>/);
+    assert.match(hybridRes.idxText, /Generic WebGME UI/);
+    assert.equal(hybridRes.info.serveWebGMEUI, true);
+    assert.equal(hybridRes.info.rootToStudio, true);
+    assert.equal(hybridRes.info.webgmeUrl, "/index.html");
+
+    // 3. User-facing / prod (`serveWebGMEUI: false`): `/` AND `/index.html` -> Studio, link hidden
+    const prodRes = await probeMode({ serveWebGMEUI: false, rootToStudio: true });
+    assert.match(prodRes.rootText, /<title>Rusty Studio<\/title>/);
+    assert.match(prodRes.idxText, /<title>Rusty Studio<\/title>/);
+    assert.equal(prodRes.info.serveWebGMEUI, false);
+    assert.equal(prodRes.info.rootToStudio, true);
+    assert.equal(prodRes.info.webgmeUrl, null);
   });
 });

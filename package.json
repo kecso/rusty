@@ -7,6 +7,7 @@
   "scripts": {
     "start": "node app.js",
     "start:dev": "NODE_ENV=dev node app.js",
+    "start:prod": "NODE_ENV=prod node app.js",
     "build:seed": "node scripts/build-seed.js",
     "sync:examples": "node scripts/sync-examples.js",
     "docs:dev": "vitepress dev docs",

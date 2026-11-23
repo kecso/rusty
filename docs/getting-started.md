@@ -28,13 +28,25 @@ npm install
 npm start
 ```
 
-The server starts WebGME and mounts three routers:
+The server starts WebGME and supports two deployment UI modes:
+
+### Dev Mode (`npm start` or `npm run start:dev`)
+
+Both **Rusty Studio** and the **WebGME Generic UI** are available side by side:
 
 | URL | Purpose |
 | --- | --- |
-| `http://127.0.0.1:8888/routers/studio` | **Rusty Studio IDE** (Diagram + Monaco + Dynamic Simulator) |
-| `http://127.0.0.1:8888/` | **WebGME Generic UI** (Meta-Editor, tree browser, `GenerateRustCrate` plugin) |
+| `http://127.0.0.1:8888/routers/studio` | **Rusty Studio IDE** (Diagram + Monaco + Simulator) |
+| `http://127.0.0.1:8888/` | **WebGME Generic UI** (Meta-Editor, tree browser, plugins) |
 | `http://127.0.0.1:8888/routers/studio/docs/` | **Built Documentation & Tutorials** (this site) |
+
+### User-Facing / Studio-Only Mode (`npm run start:prod` or `RUSTY_STUDIO_ONLY=true`)
+
+For end-user deployments where exposing WebGME's generic editor could confuse non-experts:
+
+- **`/` and `/index.html` serve Rusty Studio directly**, and the **WebGME Generic UI** is disabled.
+- The **`WebGME UI ↗`** header button in Rusty Studio automatically hides itself.
+- You can also combine flags (`RUSTY_SERVE_WEBGME_UI=true` + `RUSTY_ROOT_TO_STUDIO=true`) to make `/` open Rusty Studio while keeping WebGME reachable at `/index.html`.
 
 On first launch in guest/dev mode, Rusty Studio automatically creates a WebGME project called **`RustyDemo`** seeded from `seed/RustySeed.webgmex`.
 

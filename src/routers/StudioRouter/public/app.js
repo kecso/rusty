@@ -404,7 +404,13 @@
       const infoRes = await fetch("/routers/studio/api/info", { credentials: "same-origin" });
       state.info = await infoRes.json();
     } catch (_err) {
-      state.info = { defaultSeed: "RustySeed" };
+      state.info = { defaultSeed: "RustySeed", serveWebGMEUI: true, webgmeUrl: "/" };
+    }
+
+    const showWebGME = state.info.serveWebGMEUI !== false;
+    $("linkWebGME").classList.toggle("hidden", !showWebGME);
+    if (showWebGME) {
+      $("linkWebGME").href = state.info.webgmeUrl || "/";
     }
 
     refreshGitStatus();
@@ -502,7 +508,10 @@
     if (!projectId) return;
     try {
       await bridge.openProject(projectId, "master");
-      $("linkWebGME").href = `/?project=${encodeURIComponent(projectId)}`;
+      if (state.info && state.info.serveWebGMEUI !== false) {
+        const baseWebGme = state.info.webgmeUrl || "/";
+        $("linkWebGME").href = `${baseWebGme}?project=${encodeURIComponent(projectId)}`;
+      }
       toast(`Opened WebGME project ${projectId}`, "ok");
     } catch (err) {
       toast(`Failed to open project: ${err.message}`, "err");
