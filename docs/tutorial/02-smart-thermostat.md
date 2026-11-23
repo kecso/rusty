@@ -41,7 +41,7 @@ Start with [Tutorial 1: Build a Simple Counter](./00-build-a-counter.md) to walk
 ## Step 1: Switch to `SmartThermostat`
 
 1. In Rusty Studio's top bar, change the **Machine** dropdown from `BlinkyController` to **`SmartThermostat`**.
-2. Notice the **Git Repository** bar updates to `dir: examples/smart-thermostat` (states inherit `<dir>/src/states/<state>.rs`), ready for you to bind `<your-username>/rusty@dev` via **Bind GitHub Repo…**.
+2. Notice the **Git Repository** bar shows `Not connected (local draft)`. Once you click **`Connect Git Repository…`** once to connect `<your-username>/rusty@dev` (`examples/smart-thermostat`), states inherit `<dir>/src/states/<state>.rs` automatically.
 3. Hover any transition badge (`B ⚑`, `F`, `G`) on the **Diagram** to inspect its full Event + `[Guard]` tooltip, then switch the right pane to **Simulator**. Initial state is **`Standby`** with:
    - `current_temp_c = 21`
    - `target_temp_c = 22`
@@ -92,4 +92,4 @@ if globals.current_temp_c >= 40.0 || globals.cycle_ticks >= globals.max_cycle_ti
    ```rust
    let watts = if globals.eco_mode { 15.0 } else { 30.0 };
    ```
-3. Click **Save Draft to WebGME** (or press **`⌘S`** to commit & push to your fork's `dev` branch after binding `<your-username>/rusty` in [Tutorial 3](./04-github-sync-dev.md)), then click **✓ Verify with rustc** and re-run the **Simulator** to see `energy_wh` increase by `30 Wh` per tick!
+3. Click **Save Local Draft** (or press **`⌘S`** to save & push directly to your fork's `dev` branch once connected in [Tutorial 3](./04-github-sync-dev.md)), then click **✓ Verify with rustc** and re-run the **Simulator** to see `energy_wh` increase by `30 Wh` per tick!

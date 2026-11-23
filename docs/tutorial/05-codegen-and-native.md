@@ -2,7 +2,7 @@
 
 **Generated machines are 100% standalone.** Every Rusty machine compiles into a standard, zero-dependency Cargo crate (`Cargo.toml`, `src/lib.rs`, `src/main.rs`, `src/types.rs`, `src/machine.rs`, and `src/states/*.rs`) that runs completely outside Rusty Studio and WebGME.
 
-![Generated crate preview, Bind Machine Directory modal, and Import from GitHub modal](/images/demo-generated-crate.gif)
+![Generated crate preview and one-time Connect Git Repository modal](/images/demo-generated-crate.gif)
 
 ## 1. How Your Visual Design Is Represented in Generated Rust
 
@@ -24,8 +24,8 @@ Notice how **two levels of transition logic** work together seamlessly in `src/m
 
 - **Live Crate Tab**: Click **Crate** in Rusty Studio's center pane to inspect every generated file live or click **Download JSON Bundle**.
 - **Commit Standalone Crate to Git**: Click **Push Full Crate** in the top bar to commit `Cargo.toml` + `src/**` directly under your machine's GitHub directory.
-- **Stock WebGME Export (`GenerateRustCrate`)**: Open **WebGME UI ↗**, navigate into any `StateMachine` node, and run **`Generate Rust Crate`** to export the standalone crate as a downloadable WebGME artifact.
-- **Import Back Anytime (`ImportFromGitHub`)**: Any crate pushed to GitHub can also be swept back into WebGME using **`↓ Import from GitHub…`** (or the `Import StateMachine from GitHub Directory` plugin).
+- **Stock WebGME Export (`GenerateRustCrate`)**: In dev mode (`http://127.0.0.1:8888/`), navigate into any `StateMachine` node and run **`Generate Rust Crate`** to export the standalone crate as a downloadable WebGME artifact.
+- **Initial Import from GitHub (`ImportFromGitHub`)**: When creating a new machine in Rusty Studio, open **`Connect Git Repository…`** and select **Connect & import existing Rust code (one-time)** (or run `Import StateMachine from GitHub Directory` from WebGME in dev mode).
 
 ## 3. Running Generated Machines Independently with `cargo`
 

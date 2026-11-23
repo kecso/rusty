@@ -26,13 +26,14 @@ Instead of only touring pre-built demos, this guide walks you through designing 
 ## 2. Create the Machine & Point to Your GitHub Directory
 
 1. In the top bar next to **Machine**, click **`+ Machine`**, name it **`SimpleCounter`**, and click **Create Machine**.
-2. Click **`Bind GitHub Repo…`** in the Git Repository bar:
+2. Click **`Connect Git Repository…`** in the Git Repository bar (this is a one-time connection for the machine):
    - **Owner**: `<your-username>`
    - **Repo**: `rusty`
    - **Branch**: `dev`
    - **Machine Directory**: `examples/simple-counter`
-3. Click **Bind & Save**.
-   - Every state you create under `SimpleCounter` now automatically maps to `examples/simple-counter/src/states/<state_name>.rs`—you do not have to configure Git paths state by state (and can still override an individual state later if needed).
+   - Leave **Connect current design** selected.
+3. Click **Connect Repository**.
+   - Every state you create under `SimpleCounter` now automatically maps to `examples/simple-counter/src/states/<state_name>.rs`—no per-state Git configuration needed.
 
 ## 3. Add Shared Data, Events, and States
 
@@ -96,7 +97,7 @@ pub fn on_exit(_globals: &mut Globals) {}
 Notice two things right away:
 - **Edit-Time Checks**: Try mistyping `globals.limit` as `globals.limt`—Monaco underlines it in `< 1 ms`. Fix it and notice the **Design Dependencies (`dependsOn` Set)** chips automatically track `var: count`, `var: limit`, `ev: Increment`, and `state: LimitReached` when you save.
 - **Design Impact Detection**: Try clicking the edit icon (`✎`) on `limit` in **Globals** and renaming it to `max_count`. Immediately, an **Impact Banner** lights up at the top of the studio flagging both `Counting` and your guarded transition so no silent mismatch can slip through! Rename it back to `limit` (or update the code & guard and save) to clear the warning.
-- Press **`⌘S` / `Ctrl+S`** (or click **`↑ Commit & Push`**) to commit `examples/simple-counter/src/states/counting.rs` straight to your fork's `dev` branch.
+- Press **`⌘S` / `Ctrl+S`** (or click **`↑ Save & Push`**) to commit `examples/simple-counter/src/states/counting.rs` straight to your fork's `dev` branch.
 
 ## 6. Test, Verify Natively & Export Your Standalone Crate
 

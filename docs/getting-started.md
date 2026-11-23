@@ -44,27 +44,27 @@ Both **Rusty Studio** and the **WebGME Generic UI** are available side by side:
 
 For user-facing deployments where exposing WebGME's generic editor could confuse non-experts or guest access should not be allowed:
 
-- **Authentication is required** (`allowGuests = false`, redirecting unauthenticated visitors to `/profile/login`), and Rusty Studio exposes a **`Profile ↗`** and **`Log out`** (`/logout`) button in the top bar.
-- **`/` and `/index.html` serve Rusty Studio directly**, and the **WebGME Generic UI** is disabled (hiding the **`WebGME UI ↗`** header button automatically).
+- **Authentication is required** (`allowGuests = false`, redirecting unauthenticated visitors to `/profile/login`), and Rusty Studio exposes **`User Profile`** (`/profile` — WebGME's Git-backed user profile portal) and **`Log out`** (`/logout`) buttons in the top bar.
+- **`/` and `/index.html` serve Rusty Studio directly**, and the **WebGME Generic UI** is disabled (in all deployments, Rusty Studio keeps the workspace focused without a generic WebGME UI link in the header).
 - Running **`npm run docs:build`** automatically enables `/docs` and shows the **`Docs ↗`** link in the top bar.
 - You can also mix modes in dev via environment variables (`RUSTY_STUDIO_ONLY=true`, `RUSTY_SERVE_WEBGME_UI=true`, `RUSTY_ROOT_TO_STUDIO=true`, `RUSTY_AUTH=true`).
 
 On first launch in guest/dev mode, Rusty Studio automatically creates a WebGME project called **`RustyDemo`** seeded from `seed/RustySeed.webgmex`.
 
 ::: tip Counter Tutorial + Pre-Seeded Demo Showcases
-- **Build from scratch**: Follow [Tutorial 1: Build a Simple Counter](./tutorial/00-build-a-counter.md) to sign in via GitHub, bind your fork directory, design states/globals/events/guards, and export a standalone crate.
+- **Build from scratch**: Follow [Tutorial 1: Build a Simple Counter](./tutorial/00-build-a-counter.md) to sign in via GitHub, connect your fork directory, design states/globals/events/guards, and export a standalone crate.
 - **Pre-seeded demos in `RustySeed.webgmex`**: Use the **Machine** dropdown to tour **`BlinkyController`** ([Blinky Showcase](./tutorial/01-blinky-quickstart.md)) and **`SmartThermostat`** ([SmartThermostat Showcase](./tutorial/02-smart-thermostat.md)).
 :::
 
-## 2. Binding Your Fork's `dev` Branch for GitHub Testing
+## 2. Connecting Your Fork's `dev` Branch for GitHub Testing
 
 Both pre-seeded machines configure `GitArtifactLink` at the **`StateMachine` directory level**:
 
-- `gitOwner`: *(left blank so you bind your own GitHub username)*
+- `gitOwner`: *(left blank so you connect your own GitHub username)*
 - `gitRepo`: `rusty`
 - `gitBranch`: **`dev`**
-- `gitPath`: `examples/blinky` or `examples/smart-thermostat` *(states resolve cleanly to `<dir>/src/states/<state>.rs`, with optional per-state overrides)*
+- `gitPath`: `examples/blinky` or `examples/smart-thermostat` *(states resolve cleanly to `<dir>/src/states/<state>.rs`)*
 
-Until you bind an owner, Studio works cleanly in **Local Draft Mode**. When ready to push real commits, click **Bind GitHub Repo…** to fill in **`<your-username>/rusty`** on **`dev`**, or click **↓ Import from GitHub…** to rebuild a WebGME machine directly from any GitHub Rust crate directory.
+Before connecting a repository, Studio works cleanly in **Local Draft Mode**. When ready to connect your machine to GitHub (one-time setup per machine), click **`Connect Git Repository…`** to fill in **`<your-username>/rusty`** on **`dev`**—and optionally choose **Connect & import existing Rust code (one-time)** if that directory already contains Rust source files you want to sweep into the machine.
 
 See [Tutorial 3: GitHub Sync & Directory Import](./tutorial/04-github-sync-dev.md) for setting up `.env` and GitHub App OAuth.

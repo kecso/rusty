@@ -73,9 +73,9 @@ Open (in dev mode — `npm start` / `npm run start:dev`):
 | --- | --- | --- | --- | --- |
 | **Dev (default)** | `npm start` / `npm run start:dev` | Guest unless `RUSTY_AUTH=true` (shows **Log out** when enabled) | WebGME Generic UI (`/`) | Enabled (Studio at `/routers/studio`) |
 | **Dev Hybrid** | `RUSTY_ROOT_TO_STUDIO=true` | Guest unless `RUSTY_AUTH=true` | **Rusty Studio** | Enabled at `/index.html` |
-| **Production** | `npm run start:prod` (`NODE_ENV=prod`) | **Required** (`/profile/login` + **Log out**) | **Rusty Studio** | Disabled (`WebGME UI ↗` hidden) |
+| **Production** | `npm run start:prod` (`NODE_ENV=prod`) | **Required** (`/profile/login` + **User Profile** + **Log out**) | **Rusty Studio** | Disabled |
 
-### 3. Enable Full GitHub Sync (`webgme-git` OAuth + `/profile`)
+### 3. Enable Full GitHub Sync (`webgme-git` OAuth + `User Profile`)
 
 ```bash
 cp .env.example .env
@@ -86,8 +86,8 @@ npm start
 ```
 
 1. Install your GitHub App on `<your-username>/rusty` and sign in at `http://127.0.0.1:8888/profile/login`
-2. Link `<your-username>/rusty` to your project in `/profile`
-3. In **Rusty Studio**, click **Bind GitHub Repo…** and set `Owner = <your-username>`, `Repo = rusty`, `Branch = dev`!
+2. Open **User Profile** (`/profile`) and link `<your-username>/rusty` to your project
+3. In **Rusty Studio**, click **`Connect Git Repository…`** (one-time setup) and set `Owner = <your-username>`, `Repo = rusty`, `Branch = dev`!
 
 ## Scripts
 

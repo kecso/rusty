@@ -419,12 +419,6 @@
       $("linkDocs").href = state.info.docsUrl || "/docs";
     }
 
-    const showWebGME = state.info.serveWebGMEUI !== false;
-    $("linkWebGME").classList.toggle("hidden", !showWebGME);
-    if (showWebGME) {
-      $("linkWebGME").href = state.info.webgmeUrl || "/";
-    }
-
     const showAuthLinks = Boolean(state.info.authEnabled);
     $("linkProfile").classList.toggle("hidden", !showAuthLinks || !state.info.profileUrl);
     if (showAuthLinks && state.info.profileUrl) {
@@ -475,7 +469,7 @@
       if (st.hasGithubToken) {
         setBadge("gitStatusBadge", `GitHub: @${st.githubLogin || st.userId}`, "badge-ok");
       } else if (st.githubAppConfigured) {
-        setBadge("gitStatusBadge", "GitHub: Sign in via /profile", "badge-warn");
+        setBadge("gitStatusBadge", "GitHub: Sign in via User Profile", "badge-warn");
       } else {
         setBadge("gitStatusBadge", "GitHub: Local Draft Mode", "badge-muted");
       }
@@ -530,10 +524,6 @@
     if (!projectId) return;
     try {
       await bridge.openProject(projectId, "master");
-      if (state.info && state.info.serveWebGMEUI !== false) {
-        const baseWebGme = state.info.webgmeUrl || "/";
-        $("linkWebGME").href = `${baseWebGme}?project=${encodeURIComponent(projectId)}`;
-      }
       toast(`Opened WebGME project ${projectId}`, "ok");
     } catch (err) {
       toast(`Failed to open project: ${err.message}`, "err");
@@ -580,11 +570,19 @@
 
   function renderGitBar() {
     const m = activeMachine();
-    if (!m || !m.gitOwner || !m.gitRepo) {
-      const dir = m && m.gitPath ? ` · dir: ${m.gitPath}` : "";
-      $("machineRepoDisplay").textContent = `Unbound (local draft${dir})`;
+    const isConnected = Boolean(m && m.gitOwner && m.gitRepo);
+    if (!isConnected) {
+      $("machineRepoDisplay").textContent = "Not connected (local draft)";
+      $("machineRepoDisplay").className = "repo-pill repo-local";
+      $("btnConnectRepo").classList.toggle("hidden", !m);
+      $("btnPullAll").classList.add("hidden");
+      $("btnPushCrate").classList.add("hidden");
     } else {
       $("machineRepoDisplay").textContent = `${m.gitOwner}/${m.gitRepo}@${m.gitBranch || "main"} · ${m.gitPath || "src/states"}`;
+      $("machineRepoDisplay").className = "repo-pill repo-connected";
+      $("btnConnectRepo").classList.add("hidden");
+      $("btnPullAll").classList.remove("hidden");
+      $("btnPushCrate").classList.remove("hidden");
     }
   }
 
@@ -867,6 +865,7 @@
 
     if (st && m) {
       const eff = RustyContract.resolveStateGitLink(m, st);
+      const isConnected = Boolean(eff.gitOwner && eff.gitRepo);
       $("statePathHint").textContent = st.id;
       $("inpStateName").value = st.name;
       $("inpStateColor").value = st.color || "#38bdf8";
@@ -874,24 +873,23 @@
       $("inpStateInitial").checked = Boolean(st.isInitial);
       $("inpStateFinal").checked = Boolean(st.isFinal);
 
-      $("stateGitEffective").textContent = eff.gitOwner && eff.gitRepo
+      $("stateGitEffective").textContent = isConnected
         ? `${eff.gitOwner}/${eff.gitRepo}@${eff.gitBranch}:${eff.gitPath}`
         : eff.gitPath;
-      $("inpGitOwner").value = st.gitOwner || "";
-      $("inpGitRepo").value = st.gitRepo || "";
-      $("inpGitBranch").value = st.gitBranch || "";
-      $("inpGitPath").value = st.gitPath || "";
-      $("stateGitOverrideDetails").open = Boolean(eff.isOverridden);
       $("stateShaDisplay").textContent = st.gitBaseCommitSha ? st.gitBaseCommitSha.slice(0, 12) : "none";
+
+      $("btnCommitState").classList.toggle("hidden", !isConnected);
+      $("btnPullState").classList.toggle("hidden", !isConnected);
+      $("btnSaveCodeCache").textContent = isConnected ? "Save Local Draft" : "Save Code (⌘S)";
 
       if (state.dirtyStateIds.has(st.id)) {
         setBadge("stateSyncBadge", "Modified (unsynced)", "badge-warn");
       } else if (st.gitBaseCommitSha) {
         setBadge("stateSyncBadge", "Synced with GitHub", "badge-ok");
-      } else if (eff.isOverridden) {
-        setBadge("stateSyncBadge", "Custom Override", "badge-warn");
+      } else if (isConnected) {
+        setBadge("stateSyncBadge", "Connected Dir", "badge-muted");
       } else {
-        setBadge("stateSyncBadge", "Inherited Dir", "badge-muted");
+        setBadge("stateSyncBadge", "Local Draft", "badge-muted");
       }
 
       renderImpactBox($("stateImpactBox"), imp && imp.byStateId[st.id]);
@@ -1095,7 +1093,7 @@
     const m = activeMachine();
     const eff = RustyContract.resolveStateGitLink(m, st);
     if (!eff.gitOwner || !eff.gitRepo || !eff.gitPath) {
-      if (!opts.silentNotFound) toast("Bind GitHub Owner & Repo on this StateMachine first", "warn");
+      if (!opts.silentNotFound) toast("Connect a Git repository on this StateMachine first", "warn");
       return;
     }
     const statusEl = $("gitFetchStatus");
@@ -1147,7 +1145,7 @@
     }
     const firstEff = RustyContract.resolveStateGitLink(m, statesToCommit[0]);
     if (!firstEff.gitOwner || !firstEff.gitRepo) {
-      toast("Bind a GitHub repository first (click 'Bind GitHub Repo…')", "warn");
+      toast("Connect a Git repository first (click 'Connect Git Repository…')", "warn");
       return;
     }
 
@@ -1474,6 +1472,7 @@
       state.connectMode = !state.connectMode;
       state.connectSourceId = null;
       $("btnConnectMode").classList.toggle("btn-active", state.connectMode);
+      renderCanvas();
       if (state.connectMode) toast("Click source state, then destination state", "ok");
     });
 
@@ -1502,10 +1501,6 @@
           description: $("inpStateDesc").value,
           isInitial: $("inpStateInitial").checked,
           isFinal: $("inpStateFinal").checked,
-          gitOwner: $("inpGitOwner").value.trim(),
-          gitRepo: $("inpGitRepo").value.trim(),
-          gitBranch: $("inpGitBranch").value.trim(),
-          gitPath: $("inpGitPath").value.trim(),
         },
         `Update State ${st.name}`,
       );
@@ -1605,18 +1600,10 @@
     });
 
     // GitBar actions
-    $("btnPickRepo").addEventListener("click", openRepoModal);
+    $("btnConnectRepo").addEventListener("click", openRepoModal);
     $("btnConfirmRepoBind").addEventListener("click", confirmRepoBind);
-    $("btnImportGitHub").addEventListener("click", openImportModal);
-    $("btnConfirmImportGitHub").addEventListener("click", confirmImportGitHub);
-    document.querySelectorAll("[data-import-preset]").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const [owner, repo, branch, ...dirParts] = btn.dataset.importPreset.split("/");
-        $("importGitOwner").value = owner;
-        $("importGitRepo").value = repo;
-        $("importGitBranch").value = branch;
-        $("importGitDir").value = dirParts.join("/");
-      });
+    document.querySelectorAll('input[name="repoConnectMode"]').forEach((radio) => {
+      radio.addEventListener("change", updateRepoModalModeUI);
     });
 
     $("btnPullAll").addEventListener("click", async () => {
@@ -1629,15 +1616,10 @@
         }
       }
     });
-    $("btnSyncAll").addEventListener("click", () => {
-      const m = activeMachine();
-      if (!m) return;
-      commitStatesToGitHub(m.states, `rusty: sync all ${m.states.length} states for ${m.name}`);
-    });
     $("btnPushCrate").addEventListener("click", async () => {
       const m = activeMachine();
       if (!m || !m.gitOwner || !m.gitRepo) {
-        toast("Bind a GitHub repository first", "warn");
+        toast("Connect a Git repository first", "warn");
         return;
       }
       const files = RustyCodegen.generateCrateFiles(m);
@@ -1748,13 +1730,48 @@
     });
   }
 
+  function getSelectedConnectMode() {
+    const checked = document.querySelector('input[name="repoConnectMode"]:checked');
+    return checked ? checked.value : "bind";
+  }
+
+  function updateRepoModalModeUI() {
+    const mode = getSelectedConnectMode();
+    document.querySelectorAll("[data-connect-card]").forEach((card) => {
+      card.classList.toggle("selected", card.dataset.connectCard === mode);
+    });
+    $("importOptionsBox").classList.toggle("hidden", mode !== "import");
+    $("btnConfirmRepoBind").textContent = mode === "import" ? "Connect & Import" : "Connect Repository";
+  }
+
   async function openRepoModal() {
     const m = activeMachine();
     if (!m) return;
-    $("modalGitOwner").value = m.gitOwner || "";
+    if (m.gitOwner && m.gitRepo) {
+      toast(`"${m.name}" is already connected to ${m.gitOwner}/${m.gitRepo}`, "ok");
+      return;
+    }
+
+    $("modalGitOwner").value = "";
     $("modalGitRepo").value = m.gitRepo || "";
     $("modalGitBranch").value = m.gitBranch || "dev";
-    $("modalGitDir").value = m.gitPath || "examples/my-machine";
+    $("modalGitDir").value = m.gitPath || `examples/${RustyContract.toSnakeCase(m.name)}`;
+    $("modalImportMachineName").value = "";
+    $("repoModalStatus").textContent = "";
+
+    const bindRadio = document.querySelector('input[name="repoConnectMode"][value="bind"]');
+    if (bindRadio) bindRadio.checked = true;
+    updateRepoModalModeUI();
+
+    const warnEl = $("modalImportWarning");
+    if (m.states && m.states.length > 0) {
+      warnEl.textContent = `Importing will replace the current draft elements of "${m.name}" (${m.states.length} state(s)) with the Rust machine found in this repository directory.`;
+      warnEl.classList.remove("hidden");
+    } else {
+      warnEl.textContent = "";
+      warnEl.classList.add("hidden");
+    }
+
     $("repoModal").classList.remove("hidden");
 
     const dropdown = $("repoDropdown");
@@ -1793,81 +1810,78 @@
         }
       };
     } catch (err) {
-      dropdown.innerHTML = '<option value="">(Sign in via /profile to browse repos)</option>';
+      dropdown.innerHTML = '<option value="">(Sign in via User Profile to browse repositories)</option>';
       $("repoPickerStatus").textContent = err.message;
     }
   }
 
-  function confirmRepoBind() {
+  async function confirmRepoBind() {
     const m = activeMachine();
     if (!m) return;
-    const gitOwner = $("modalGitOwner").value.trim();
-    const gitRepo = $("modalGitRepo").value.trim();
-    const gitBranch = $("modalGitBranch").value.trim() || "main";
-    const gitPath = $("modalGitDir").value.trim() || "src/states";
-    const clearOverrides = $("modalClearStateOverrides").checked;
-
-    bridge.bindMachineRepo(m.id, {
-      gitOwner,
-      gitRepo,
-      gitBranch,
-      gitPath,
-      clearStateOverrides: clearOverrides,
-      stateIds: m.states.map((s) => s.id),
-    });
-    $("repoModal").classList.add("hidden");
-    toast(`Bound ${gitOwner}/${gitRepo}@${gitBranch} (${gitPath})`, "ok");
-  }
-
-  function openImportModal() {
-    $("importModalStatus").textContent = "";
-    $("importModal").classList.remove("hidden");
-  }
-
-  async function confirmImportGitHub() {
-    const owner = $("importGitOwner").value.trim();
-    const repo = $("importGitRepo").value.trim();
-    const branch = $("importGitBranch").value.trim() || "main";
-    const dirPath = $("importGitDir").value.trim();
-    const machineName = $("importMachineName").value.trim();
-    if (!owner || !repo || !dirPath) {
-      toast("Enter Owner, Repo, and Directory Path", "warn");
+    if (m.gitOwner && m.gitRepo) {
+      $("repoModal").classList.add("hidden");
       return;
     }
 
-    const status = $("importModalStatus");
-    const btn = $("btnConfirmImportGitHub");
+    const gitOwner = $("modalGitOwner").value.trim();
+    const gitRepo = $("modalGitRepo").value.trim();
+    const gitBranch = $("modalGitBranch").value.trim() || "main";
+    const gitPath = $("modalGitDir").value.trim();
+    if (!gitOwner || !gitRepo || !gitPath) {
+      toast("Enter Owner, Repo, and Machine Directory", "warn");
+      return;
+    }
+
+    const mode = getSelectedConnectMode();
+    if (mode === "bind") {
+      bridge.bindMachineRepo(m.id, {
+        gitOwner,
+        gitRepo,
+        gitBranch,
+        gitPath,
+        clearStateOverrides: true,
+        stateIds: m.states.map((s) => s.id),
+      });
+      $("repoModal").classList.add("hidden");
+      toast(`Connected ${gitOwner}/${gitRepo}@${gitBranch} (${gitPath})`, "ok");
+      return;
+    }
+
+    const machineName = $("modalImportMachineName").value.trim();
+    const status = $("repoModalStatus");
+    const btn = $("btnConfirmRepoBind");
     btn.disabled = true;
-    status.textContent = `Sweeping ${owner}/${repo}/${dirPath}@${branch}…`;
+    status.textContent = `Sweeping ${gitOwner}/${gitRepo}/${gitPath}@${gitBranch}…`;
 
     try {
       const filesMap = await gitClient.sweepDirectoryFiles({
-        owner,
-        repo,
-        dirPath,
-        ref: branch,
+        owner: gitOwner,
+        repo: gitRepo,
+        dirPath: gitPath,
+        ref: gitBranch,
         projectId: bridge.projectId,
       });
       const { model, summary } = RustyImporter.parseCrateFilesToModel(filesMap, {
-        owner,
-        repo,
-        branch,
-        dirPath,
+        owner: gitOwner,
+        repo: gitRepo,
+        branch: gitBranch,
+        dirPath: gitPath,
         machineName,
       });
-      const newSmId = bridge.importStateMachineModel(model);
-      state.activeMachineId = newSmId;
+      bridge.populateMachineFromImport(m.id, model);
       state.selectedType = null;
       state.selectedId = null;
-      $("importModal").classList.add("hidden");
+      state.dirtyStateIds.clear();
+      state.fetchedStateIds.clear();
+      $("repoModal").classList.add("hidden");
       toast(
-        `Imported ${model.name} (${summary.states} states, ${summary.transitions} transitions)`,
+        `Connected & imported ${model.name} (${summary.states} states, ${summary.transitions} transitions)`,
         "ok",
       );
       renderAll();
     } catch (err) {
       status.textContent = `Error: ${err.message}`;
-      toast(`GitHub import failed: ${err.message}`, "err");
+      toast(`Connect & import failed: ${err.message}`, "err");
     } finally {
       btn.disabled = false;
     }

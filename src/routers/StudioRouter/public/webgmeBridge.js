@@ -368,13 +368,87 @@
       });
     }
 
-    importStateMachineModel(model) {
-      const smBase = this.getMetaId("StateMachine");
+    _populateMachineChildrenInsideTx(smId, model) {
       const stBase = this.getMetaId("State");
       const trBase = this.getMetaId("Transition");
       const gBase = this.getMetaId("GlobalVar");
       const evBase = this.getMetaId("EventDef");
-      if (!smBase || !stBase || !trBase || !gBase || !evBase) {
+      if (!stBase || !trBase || !gBase || !evBase) {
+        throw new Error("Rusty metamodel types not found in active WebGME project");
+      }
+
+      const globalsWithIds = (model.globals || []).map((g) => {
+        const gid = this.client.createNode({ parentId: smId, baseId: gBase });
+        this.client.setAttribute(gid, "name", g.name);
+        this.client.setAttribute(gid, "rustType", g.rustType || "i32");
+        this.client.setAttribute(gid, "initialValue", String(g.initialValue ?? "0"));
+        this.client.setAttribute(gid, "description", g.description || "");
+        return { ...g, id: gid };
+      });
+
+      const eventsWithIds = (model.events || []).map((ev) => {
+        const eid = this.client.createNode({ parentId: smId, baseId: evBase });
+        this.client.setAttribute(eid, "name", ev.name);
+        this.client.setAttribute(eid, "payloadType", ev.payloadType || "");
+        this.client.setAttribute(eid, "description", ev.description || "");
+        return { ...ev, id: eid };
+      });
+
+      const stateIdByName = new Map();
+      const statesWithIds = (model.states || []).map((st) => {
+        const sid = this.client.createNode({ parentId: smId, baseId: stBase });
+        this.client.setAttribute(sid, "name", st.name);
+        this.client.setAttribute(sid, "description", st.description || "");
+        this.client.setAttribute(sid, "isInitial", Boolean(st.isInitial));
+        this.client.setAttribute(sid, "isFinal", Boolean(st.isFinal));
+        this.client.setAttribute(sid, "color", st.color || "#38bdf8");
+        this.client.setAttribute(sid, "codeCache", st.code || "");
+        this.client.setAttribute(sid, "gitOwner", "");
+        this.client.setAttribute(sid, "gitRepo", "");
+        this.client.setAttribute(sid, "gitBranch", "");
+        this.client.setAttribute(sid, "gitPath", "");
+        this.client.setAttribute(sid, "gitArtifactType", "file");
+        this.client.setAttribute(sid, "gitBaseCommitSha", "");
+        this.client.setRegistry(sid, "position", st.position || { x: 160, y: 160 });
+        stateIdByName.set(st.name, sid);
+        return { ...st, id: sid };
+      });
+
+      const modelWithIds = { ...model, globals: globalsWithIds, events: eventsWithIds, states: statesWithIds };
+
+      for (const st of statesWithIds) {
+        const deps = global.RustyAnalyzer.extractDependencies(st.code || "", modelWithIds);
+        const sig = global.RustyAnalyzer.serializeDepsSnapshot(deps.snapshot);
+        this.client.setAttribute(st.id, "depsSignature", sig);
+        for (const mid of deps.memberIds) {
+          this.client.addMember(st.id, mid, "dependsOn");
+        }
+      }
+
+      for (const tr of model.transitions || []) {
+        const srcId = stateIdByName.get(tr.srcName);
+        const dstId = stateIdByName.get(tr.dstName);
+        if (!srcId || !dstId) continue;
+        const tid = this.client.createNode({ parentId: smId, baseId: trBase });
+        this.client.setAttribute(tid, "name", tr.name || `on_${global.RustyContract.toSnakeCase(tr.event)}`);
+        this.client.setAttribute(tid, "event", tr.event || "Tick");
+        this.client.setAttribute(tid, "guard", tr.guard || "");
+        this.client.setAttribute(tid, "action", tr.action || "");
+        this.client.setAttribute(tid, "priority", Number(tr.priority ?? 1));
+        this.client.setPointer(tid, "src", srcId);
+        this.client.setPointer(tid, "dst", dstId);
+        const deps = global.RustyAnalyzer.extractDependencies(tr.guard || "", modelWithIds, { triggerEvent: tr.event });
+        const sig = global.RustyAnalyzer.serializeDepsSnapshot(deps.snapshot);
+        this.client.setAttribute(tid, "depsSignature", sig);
+        for (const mid of deps.memberIds) {
+          this.client.addMember(tid, mid, "dependsOn");
+        }
+      }
+    }
+
+    importStateMachineModel(model) {
+      const smBase = this.getMetaId("StateMachine");
+      if (!smBase) {
         throw new Error("Rusty metamodel types not found in active WebGME project");
       }
 
@@ -389,75 +463,47 @@
         this.client.setAttribute(smId, "gitBranch", model.gitBranch || "main");
         this.client.setAttribute(smId, "gitPath", model.gitPath || "src/states");
         this.client.setAttribute(smId, "gitArtifactType", "dir");
-
-        const globalsWithIds = (model.globals || []).map((g) => {
-          const gid = this.client.createNode({ parentId: smId, baseId: gBase });
-          this.client.setAttribute(gid, "name", g.name);
-          this.client.setAttribute(gid, "rustType", g.rustType || "i32");
-          this.client.setAttribute(gid, "initialValue", String(g.initialValue ?? "0"));
-          this.client.setAttribute(gid, "description", g.description || "");
-          return { ...g, id: gid };
-        });
-
-        const eventsWithIds = (model.events || []).map((ev) => {
-          const eid = this.client.createNode({ parentId: smId, baseId: evBase });
-          this.client.setAttribute(eid, "name", ev.name);
-          this.client.setAttribute(eid, "payloadType", ev.payloadType || "");
-          this.client.setAttribute(eid, "description", ev.description || "");
-          return { ...ev, id: eid };
-        });
-
-        const stateIdByName = new Map();
-        const statesWithIds = (model.states || []).map((st) => {
-          const sid = this.client.createNode({ parentId: smId, baseId: stBase });
-          this.client.setAttribute(sid, "name", st.name);
-          this.client.setAttribute(sid, "description", st.description || "");
-          this.client.setAttribute(sid, "isInitial", Boolean(st.isInitial));
-          this.client.setAttribute(sid, "isFinal", Boolean(st.isFinal));
-          this.client.setAttribute(sid, "color", st.color || "#38bdf8");
-          this.client.setAttribute(sid, "codeCache", st.code || "");
-          this.client.setAttribute(sid, "gitOwner", "");
-          this.client.setAttribute(sid, "gitRepo", "");
-          this.client.setAttribute(sid, "gitBranch", "");
-          this.client.setAttribute(sid, "gitPath", "");
-          this.client.setAttribute(sid, "gitArtifactType", "file");
-          this.client.setRegistry(sid, "position", st.position || { x: 160, y: 160 });
-          stateIdByName.set(st.name, sid);
-          return { ...st, id: sid };
-        });
-
-        const modelWithIds = { ...model, globals: globalsWithIds, events: eventsWithIds, states: statesWithIds };
-
-        for (const st of statesWithIds) {
-          const deps = global.RustyAnalyzer.extractDependencies(st.code || "", modelWithIds);
-          const sig = global.RustyAnalyzer.serializeDepsSnapshot(deps.snapshot);
-          this.client.setAttribute(st.id, "depsSignature", sig);
-          for (const mid of deps.memberIds) {
-            this.client.addMember(st.id, mid, "dependsOn");
-          }
-        }
-
-        for (const tr of model.transitions || []) {
-          const srcId = stateIdByName.get(tr.srcName);
-          const dstId = stateIdByName.get(tr.dstName);
-          if (!srcId || !dstId) continue;
-          const tid = this.client.createNode({ parentId: smId, baseId: trBase });
-          this.client.setAttribute(tid, "name", tr.name || `on_${global.RustyContract.toSnakeCase(tr.event)}`);
-          this.client.setAttribute(tid, "event", tr.event || "Tick");
-          this.client.setAttribute(tid, "guard", tr.guard || "");
-          this.client.setAttribute(tid, "action", tr.action || "");
-          this.client.setAttribute(tid, "priority", Number(tr.priority ?? 1));
-          this.client.setPointer(tid, "src", srcId);
-          this.client.setPointer(tid, "dst", dstId);
-          const deps = global.RustyAnalyzer.extractDependencies(tr.guard || "", modelWithIds, { triggerEvent: tr.event });
-          const sig = global.RustyAnalyzer.serializeDepsSnapshot(deps.snapshot);
-          this.client.setAttribute(tid, "depsSignature", sig);
-          for (const mid of deps.memberIds) {
-            this.client.addMember(tid, mid, "dependsOn");
-          }
-        }
-
+        this._populateMachineChildrenInsideTx(smId, model);
         return smId;
+      });
+    }
+
+    populateMachineFromImport(machineId, model) {
+      return this.runTransaction(`Connect & import StateMachine ${model.name}`, () => {
+        const smNode = this.client.getNode(machineId);
+        if (!smNode) throw new Error(`StateMachine node ${machineId} not found`);
+
+        const existingChildIds = (smNode.getChildrenIds() || []).slice();
+        const nonTransitions = [];
+        for (const cid of existingChildIds) {
+          const child = this.client.getNode(cid);
+          if (child && this._isMetaType(child, "Transition")) {
+            this.client.deleteNode(cid);
+          } else {
+            nonTransitions.push(cid);
+          }
+        }
+        for (const cid of nonTransitions) {
+          this.client.deleteNode(cid);
+        }
+
+        const nextName = model.name || smNode.getAttribute("name") || "StateMachine";
+        this.client.setAttribute(machineId, "name", nextName);
+        this.client.setAttribute(
+          machineId,
+          "crateName",
+          model.crateName || global.RustyContract.toSnakeCase(nextName),
+        );
+        this.client.setAttribute(machineId, "description", model.description || "");
+        this.client.setAttribute(machineId, "tickMs", Number(model.tickMs || 800));
+        this.client.setAttribute(machineId, "gitOwner", model.gitOwner || "");
+        this.client.setAttribute(machineId, "gitRepo", model.gitRepo || "");
+        this.client.setAttribute(machineId, "gitBranch", model.gitBranch || "main");
+        this.client.setAttribute(machineId, "gitPath", model.gitPath || "src/states");
+        this.client.setAttribute(machineId, "gitArtifactType", "dir");
+
+        this._populateMachineChildrenInsideTx(machineId, model);
+        return machineId;
       });
     }
 

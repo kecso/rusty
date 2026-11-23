@@ -57,8 +57,7 @@
         <span id="gmeStatusBadge" class="badge badge-muted">WebGME: Connecting…</span>
         <span id="gitStatusBadge" class="badge badge-muted">GitHub: Checking…</span>
         <a id="linkDocs" href="/docs" target="_blank" class="btn btn-sm hidden" title="Open Local Tutorials &amp; Documentation">Docs ↗</a>
-        <a id="linkWebGME" href="/" target="_blank" class="btn btn-sm" title="Open live project in WebGME Generic UI">WebGME UI ↗</a>
-        <a id="linkProfile" href="/profile" target="_blank" class="btn btn-sm hidden" title="Manage GitHub OAuth &amp; Project Repo Access">Profile ↗</a>
+        <a id="linkProfile" href="/profile" target="_blank" class="btn btn-sm hidden" title="Open your WebGME User Profile &amp; repository settings">User Profile</a>
         <a id="linkLogout" href="/logout" class="btn btn-sm hidden" title="Sign out">Log out</a>
       </div>
     </header>
@@ -67,15 +66,13 @@
     <div class="gitbar">
       <div class="gitbar-left">
         <span class="gitbar-label">Git Repository:</span>
-        <code id="machineRepoDisplay" class="repo-pill">Unbound (local draft)</code>
-        <button id="btnPickRepo" class="btn btn-xs">Bind GitHub Repo…</button>
-        <button id="btnImportGitHub" class="btn btn-xs" title="Sweep a GitHub crate or states directory to rebuild a WebGME StateMachine">↓ Import from GitHub…</button>
-        <button id="btnPullAll" class="btn btn-xs" title="Fetch all state .rs files from GitHub">↓ Pull States</button>
-        <button id="btnSyncAll" class="btn btn-xs btn-primary" title="Commit all modified state files via webgme-git">↑ Sync All States</button>
+        <code id="machineRepoDisplay" class="repo-pill repo-local">Not connected (local draft)</code>
+        <button id="btnConnectRepo" class="btn btn-xs btn-primary" title="One-time setup: connect this machine to a GitHub repository directory (or import an existing Rust machine)">Connect Git Repository…</button>
+        <button id="btnPullAll" class="btn btn-xs hidden" title="Pull latest state .rs files from GitHub">↓ Pull States</button>
       </div>
       <div class="gitbar-right">
         <button id="btnRustCheck" class="btn btn-xs btn-success" title="Run cargo check via /routers/rustsim">✓ Verify with rustc</button>
-        <button id="btnPushCrate" class="btn btn-xs" title="Commit complete standalone Cargo crate to GitHub">Push Full Crate</button>
+        <button id="btnPushCrate" class="btn btn-xs hidden" title="Commit complete standalone Cargo crate to GitHub">Push Full Crate</button>
         <span id="rustcBadge" class="badge badge-muted">rustc: …</span>
       </div>
     </div>
@@ -223,37 +220,12 @@
             <div class="subsection">
               <div class="subsection-title">
                 <span>Git File Location</span>
-                <span id="stateSyncBadge" class="badge badge-muted">Local</span>
+                <span id="stateSyncBadge" class="badge badge-muted">Local Draft</span>
               </div>
               <div class="effective-git-row">
                 <code id="stateGitEffective">-</code>
                 <span id="stateShaChip" class="muted-mono">sha: <span id="stateShaDisplay">none</span></span>
               </div>
-              <details id="stateGitOverrideDetails" class="override-details">
-                <summary>Override Git path / repo for this state (optional)</summary>
-                <div class="override-body">
-                  <div class="form-grid">
-                    <label>
-                      <span>Owner Override</span>
-                      <input id="inpGitOwner" type="text" placeholder="(inherit from machine)" />
-                    </label>
-                    <label>
-                      <span>Repo Override</span>
-                      <input id="inpGitRepo" type="text" placeholder="(inherit from machine)" />
-                    </label>
-                  </div>
-                  <div class="form-grid">
-                    <label>
-                      <span>Branch Override</span>
-                      <input id="inpGitBranch" type="text" placeholder="(inherit from machine)" />
-                    </label>
-                    <label>
-                      <span>Path Override</span>
-                      <input id="inpGitPath" type="text" placeholder="(auto from machine dir)" />
-                    </label>
-                  </div>
-                </div>
-              </details>
             </div>
 
             <div class="subsection">
@@ -265,7 +237,7 @@
 
             <div class="subsection code-section">
               <div class="subsection-title">
-                <span>Rust State Code (Monaco · <code>⌘S</code> Commit &amp; Push)</span>
+                <span>Rust State Code (Monaco · <code>⌘S</code> Save / Sync)</span>
                 <div class="btn-row">
                   <span id="gitFetchStatus" class="muted-mono"></span>
                   <button id="btnExpandEditor" class="btn btn-xs" title="Widen editor pane">⇔ Wide</button>
@@ -280,9 +252,9 @@
               </div>
               <ul id="editorProblemsList" class="problems-list hidden"></ul>
               <div class="btn-row">
-                <button id="btnCommitState" class="btn btn-xs btn-accent" title="Save to WebGME + atomic Commit & Push to GitHub (Cmd/Ctrl+S)">↑ Commit &amp; Push (⌘S)</button>
-                <button id="btnSaveCodeCache" class="btn btn-xs btn-primary">Save Draft to WebGME</button>
-                <button id="btnPullState" class="btn btn-xs" title="Reload latest content from GitHub">↓ Reload GitHub</button>
+                <button id="btnCommitState" class="btn btn-xs btn-accent hidden" title="Save to WebGME + atomic Commit & Push to GitHub (Cmd/Ctrl+S)">↑ Save &amp; Push (⌘S)</button>
+                <button id="btnSaveCodeCache" class="btn btn-xs btn-primary">Save Code (⌘S)</button>
+                <button id="btnPullState" class="btn btn-xs hidden" title="Reload latest content from GitHub">↓ Reload from Git</button>
               </div>
             </div>
           </div>
@@ -397,17 +369,17 @@
     </main>
   </div>
 
-  <!-- Modal: GitHub Repo Binding (Machine Directory Level) -->
+  <!-- Modal: One-Time Connect Git Repository (+ Optional Initial Import) -->
   <div id="repoModal" class="modal-backdrop hidden">
     <div class="modal-card">
       <div class="modal-header">
-        <h3>Bind Machine Directory on GitHub</h3>
+        <h3>Connect Git Repository</h3>
         <button class="btn btn-xs" data-close-modal="repoModal">✕</button>
       </div>
       <div class="modal-body">
         <p class="muted">
-          Configure Git at the <strong>StateMachine directory level</strong>. Individual states automatically map to
-          <code>&lt;dir&gt;/src/states/&lt;state&gt;.rs</code> unless overridden in the State inspector.
+          One-time setup: connect this <strong>StateMachine</strong> to a directory in a GitHub repository.
+          Once connected, state files sync directly to <code>&lt;dir&gt;/src/states/&lt;state&gt;.rs</code>.
         </p>
         <div id="repoPickerStatus" class="muted-mono"></div>
         <label class="form-row">
@@ -426,52 +398,37 @@
           </label>
           <label><span>Machine Directory</span><input id="modalGitDir" type="text" value="examples/smart-thermostat" /></label>
         </div>
-        <label class="checkbox-row">
-          <input id="modalClearStateOverrides" type="checkbox" checked />
-          Use machine-level directory cleanly across all States (clear per-state overrides)
-        </label>
+
+        <div class="connect-mode-group" role="radiogroup" aria-label="Connection setup mode">
+          <label class="connect-mode-card selected" data-connect-card="bind">
+            <input type="radio" name="repoConnectMode" value="bind" checked />
+            <div class="connect-mode-text">
+              <span class="connect-mode-title">Connect current design</span>
+              <span class="connect-mode-desc">Link this StateMachine to the repository directory as-is.</span>
+            </div>
+          </label>
+          <label class="connect-mode-card" data-connect-card="import">
+            <input type="radio" name="repoConnectMode" value="import" />
+            <div class="connect-mode-text">
+              <span class="connect-mode-title">Connect &amp; import existing Rust code (one-time)</span>
+              <span class="connect-mode-desc">Sweep this directory on GitHub and populate states, globals, events, and transitions from existing Rust files.</span>
+            </div>
+          </label>
+        </div>
+
+        <div id="importOptionsBox" class="hidden" style="display:flex;flex-direction:column;gap:8px;">
+          <div id="modalImportWarning" class="import-warn hidden"></div>
+          <label class="form-row">
+            <span>Machine Name (optional — leave blank to infer from crate)</span>
+            <input id="modalImportMachineName" type="text" placeholder="e.g. SmartThermostat" />
+          </label>
+        </div>
+
+        <div id="repoModalStatus" class="muted-mono"></div>
       </div>
       <div class="modal-footer">
         <button class="btn btn-sm" data-close-modal="repoModal">Cancel</button>
-        <button id="btnConfirmRepoBind" class="btn btn-sm btn-primary">Bind &amp; Save</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- Modal: Import StateMachine from GitHub Directory -->
-  <div id="importModal" class="modal-backdrop hidden">
-    <div class="modal-card">
-      <div class="modal-header">
-        <h3>Import StateMachine from GitHub Directory</h3>
-        <button class="btn btn-xs" data-close-modal="importModal">✕</button>
-      </div>
-      <div class="modal-body">
-        <p class="muted">
-          Point to a GitHub directory containing a Rust crate (<code>Cargo.toml</code>, <code>src/types.rs</code>,
-          <code>src/machine.rs</code>, <code>src/states/*.rs</code>) or standalone state <code>*.rs</code> files.
-          Rusty sweeps the directory and reconstructs the full WebGME design.
-        </p>
-        <div class="btn-row">
-          <button type="button" class="btn btn-xs" data-import-preset="kecso/rusty/dev/examples/smart-thermostat">Preset: SmartThermostat</button>
-          <button type="button" class="btn btn-xs" data-import-preset="kecso/rusty/dev/examples/blinky">Preset: Blinky</button>
-        </div>
-        <div class="form-grid">
-          <label><span>Owner</span><input id="importGitOwner" type="text" value="kecso" /></label>
-          <label><span>Repo</span><input id="importGitRepo" type="text" value="rusty" /></label>
-        </div>
-        <div class="form-grid">
-          <label><span>Branch / Ref</span><input id="importGitBranch" type="text" value="dev" /></label>
-          <label><span>Directory Path</span><input id="importGitDir" type="text" value="examples/smart-thermostat" /></label>
-        </div>
-        <label class="form-row">
-          <span>New StateMachine Name (optional — leave blank to infer from crate)</span>
-          <input id="importMachineName" type="text" placeholder="e.g. ImportedThermostat" />
-        </label>
-        <div id="importModalStatus" class="muted-mono"></div>
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-sm" data-close-modal="importModal">Cancel</button>
-        <button id="btnConfirmImportGitHub" class="btn btn-sm btn-primary">Sweep &amp; Import StateMachine</button>
+        <button id="btnConfirmRepoBind" class="btn btn-sm btn-primary">Connect Repository</button>
       </div>
     </div>
   </div>

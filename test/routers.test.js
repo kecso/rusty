@@ -52,6 +52,22 @@ describe("Rusty WebGME Routers", () => {
     assert.equal(info.appName, "Rusty Studio");
     assert.equal(info.defaultSeed, "RustySeed");
 
+    const htmlRes = await fetch(`${baseUrl}/routers/studio/`);
+    assert.equal(htmlRes.status, 200);
+    const html = await htmlRes.text();
+    assert.doesNotMatch(html, /id="linkWebGME"/);
+    assert.doesNotMatch(html, /WebGME UI/);
+    assert.doesNotMatch(html, /id="btnSyncAll"/);
+    assert.doesNotMatch(html, /Sync All States/);
+    assert.doesNotMatch(html, /id="btnImportGitHub"/);
+    assert.doesNotMatch(html, /id="importModal"/);
+    assert.doesNotMatch(html, /Unbound \(/);
+    assert.match(html, /id="linkProfile"[^>]*href="\/profile"[^>]*>User Profile<\/a>/);
+    assert.doesNotMatch(html, /id="linkProfile"[^>]*github\.com/);
+    assert.match(html, /id="btnConnectRepo"[^>]*>Connect Git Repository…<\/button>/);
+    assert.match(html, /name="repoConnectMode"[^>]*value="bind"/);
+    assert.match(html, /name="repoConnectMode"[^>]*value="import"/);
+
     const jsRes = await fetch(`${baseUrl}/routers/studio/common/rustSimEngine.js`);
     assert.equal(jsRes.status, 200);
     const body = await jsRes.text();
