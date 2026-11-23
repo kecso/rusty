@@ -44,7 +44,7 @@ Both **Rusty Studio** and the **WebGME Generic UI** are available side by side:
 
 For user-facing deployments where exposing WebGME's generic editor could confuse non-experts or guest access should not be allowed:
 
-- **Authentication is required** (`allowGuests = false`, redirecting unauthenticated visitors to `/profile/login`), and Rusty Studio exposes **`User Profile`** (`/profile` — WebGME's Git-backed user profile portal) and **`Log out`** (`/logout`) buttons in the top bar.
+- **Authentication is required** (`allowGuests = false`, redirecting unauthenticated visitors to `/profile/login`, supporting Layer 1 OAuth/OIDC or WebGME passwords), and Rusty Studio exposes **`User Profile`** (`/profile` — project access, repository bindings, and 1-to-1 GitHub App linking) and **`Log out`** (`/logout`) buttons in the top bar.
 - **`/` and `/index.html` serve Rusty Studio directly**, and the **WebGME Generic UI** is disabled (in all deployments, Rusty Studio keeps the workspace focused without a generic WebGME UI link in the header).
 - Running **`npm run docs:build`** automatically enables `/docs` and shows the **`Docs ↗`** link in the top bar.
 - You can also mix modes in dev via environment variables (`RUSTY_STUDIO_ONLY=true`, `RUSTY_SERVE_WEBGME_UI=true`, `RUSTY_ROOT_TO_STUDIO=true`, `RUSTY_AUTH=true`).

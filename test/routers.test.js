@@ -8,7 +8,7 @@ const { getStarterBlinkyModel } = require("../src/common/rustContract");
 
 const StudioRouter = require("../src/routers/StudioRouter/StudioRouter");
 const RustSimRouter = require("../src/routers/RustSimRouter/RustSimRouter");
-const GitRouterAdapter = require("../src/routers/GitRouterAdapter/GitRouterAdapter");
+const { GitRouter } = require("webgme-git");
 const RootRouter = require("../src/routers/RootRouter/RootRouter");
 
 describe("Rusty WebGME Routers", () => {
@@ -27,11 +27,11 @@ describe("Rusty WebGME Routers", () => {
 
     StudioRouter.initialize(mockOpts);
     RustSimRouter.initialize(mockOpts);
-    GitRouterAdapter.initialize(mockOpts);
+    GitRouter.initialize(mockOpts);
 
     app.use("/routers/studio", StudioRouter.router);
     app.use("/routers/rustsim", RustSimRouter.router);
-    app.use("/routers/gitrouter", GitRouterAdapter.router);
+    app.use("/routers/gitrouter", GitRouter.router);
 
     server = http.createServer(app);
     await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -40,6 +40,7 @@ describe("Rusty WebGME Routers", () => {
   });
 
   after(async () => {
+    await GitRouter.stop();
     if (server) {
       await new Promise((resolve) => server.close(resolve));
     }
@@ -95,12 +96,13 @@ describe("Rusty WebGME Routers", () => {
     assert.match(await docsRes.text(), /Rusty/);
   });
 
-  it("serves GitRouterAdapter /status", async () => {
+  it("serves native webgme-git GitRouter /status", async () => {
     const res = await fetch(`${baseUrl}/routers/gitrouter/status`);
     assert.equal(res.status, 200);
     const data = await res.json();
     assert.equal(typeof data.githubAppConfigured, "boolean");
     assert.equal(data.profileUrl, "/profile");
+    assert.equal(data.connectUrl, "/profile/github/connect");
   });
 
   it("verifies and runs BlinkyController via RustSimRouter /check and /run", async () => {
@@ -134,12 +136,22 @@ describe("Rusty WebGME Routers", () => {
     assert.equal(run.trace[3].to, "Idle");
   });
 
-  it("validates default, dev, and prod configurations with expected UI deployment and auth flags", () => {
+  it("validates default, dev, and prod configurations with Layer 1/Layer 2 wiring", () => {
     const defCfg = require("../config/config.default");
     const devCfg = require("../config/config.dev");
     const prodCfg = require("../config/config.prod");
 
     assert.equal(defCfg.rest.components.root.mount, "");
+    assert.equal(
+      defCfg.rest.components.gitrouter.src,
+      require.resolve("webgme-git/src/routers/GitRouter.js"),
+    );
+    assert.equal(
+      defCfg.authentication.userManagementPage,
+      require.resolve("webgme-git/profile.js"),
+    );
+    assert.equal(defCfg.seedProjects.defaultProject, "RustySeed");
+    assert.ok(defCfg.seedProjects.basePaths.length >= 2);
     assert.equal(defCfg.rest.components.studio.options.serveWebGMEUI, true);
     assert.equal(defCfg.rest.components.studio.options.rootToStudio, false);
 
@@ -150,8 +162,76 @@ describe("Rusty WebGME Routers", () => {
     assert.equal(prodCfg.rest.components.studio.options.rootToStudio, true);
     assert.equal(prodCfg.authentication.enable, true);
     assert.equal(prodCfg.authentication.allowGuests, false);
+    assert.equal(prodCfg.authentication.allowPasswordLogin, true);
+    assert.equal(prodCfg.authentication.oauth.enable, false);
     assert.equal(prodCfg.authentication.logInUrl, "/profile/login");
     assert.equal(prodCfg.authentication.logOutUrl, "/profile/login");
+  });
+
+  it("configures Layer 1 OAuth presets (GitHub, Google, generic OIDC) cleanly and passes validator", () => {
+    const validateConfig = require("webgme/config/validator");
+    const { configureLayer1OAuth } = require("../config/configureOAuth");
+
+    function freshConfig() {
+      delete require.cache[require.resolve("webgme-engine/config/config.default")];
+      delete require.cache[require.resolve("webgme/config/config.default")];
+      const cfg = require("webgme/config/config.default");
+      cfg.authentication.enable = true;
+      cfg.authentication.allowGuests = false;
+      cfg.authentication.logInUrl = "/profile/login";
+      cfg.authentication.logOutUrl = "/profile/login";
+      return cfg;
+    }
+
+    // 1. GitHub OAuth preset
+    const ghCfg = freshConfig();
+    configureLayer1OAuth(ghCfg, {
+      OAUTH_PROVIDER: "github",
+      OAUTH_CLIENT_ID: "gh-client",
+      OAUTH_CLIENT_SECRET: "gh-secret",
+      WEBGME_BASE_URL: "https://rusty.example.com/",
+    });
+    assert.equal(ghCfg.authentication.oauth.enable, true);
+    assert.equal(ghCfg.authentication.oauth.providerName, "github");
+    assert.equal(ghCfg.authentication.oauth.usePKCE, false);
+    assert.equal(ghCfg.authentication.oauth.redirectUri, "https://rusty.example.com/oauth/callback");
+    assert.equal(ghCfg.authentication.allowPasswordLogin, false);
+    validateConfig(ghCfg);
+
+    // 2. Google OIDC preset
+    const googleCfg = freshConfig();
+    configureLayer1OAuth(googleCfg, {
+      OAUTH_PROVIDER: "google",
+      OAUTH_CLIENT_ID: "google-client",
+      OAUTH_CLIENT_SECRET: "google-secret",
+    });
+    assert.equal(googleCfg.authentication.oauth.enable, true);
+    assert.equal(googleCfg.authentication.oauth.providerName, "google");
+    assert.equal(
+      googleCfg.authentication.oauth.discoveryUrl,
+      "https://accounts.google.com/.well-known/openid-configuration",
+    );
+    assert.equal(googleCfg.authentication.oauth.usePKCE, true);
+    assert.equal(googleCfg.authentication.allowPasswordLogin, false);
+    validateConfig(googleCfg);
+
+    // 3. Generic OIDC with discoveryUrl + explicit password login opt-in
+    const oidcCfg = freshConfig();
+    configureLayer1OAuth(oidcCfg, {
+      OAUTH_PROVIDER: "keycloak",
+      OAUTH_DISCOVERY_URL: "https://idp.example.com/.well-known/openid-configuration",
+      OAUTH_CLIENT_ID: "rusty-oidc",
+      RUSTY_ALLOW_PASSWORD_LOGIN: "true",
+      RUSTY_ENABLE_ACCESS_TOKENS: "false",
+    });
+    assert.equal(oidcCfg.authentication.oauth.enable, true);
+    assert.equal(oidcCfg.authentication.oauth.providerName, "keycloak");
+    assert.equal(oidcCfg.authentication.allowPasswordLogin, true);
+    assert.equal(oidcCfg.authentication.enableAccessTokens, false);
+    validateConfig(oidcCfg);
+
+    // 4. Clean up cached webgme config so subsequent tests see pristine defaults
+    freshConfig();
   });
 
   it("serves RootRouter + StudioRouter accurately across dev, hybrid, user-facing, /docs, and auth modes", async () => {

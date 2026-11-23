@@ -45,7 +45,11 @@ server.start((err) => {
   console.log(`  webgme-git Router          : ${baseUrl}/routers/gitrouter/status`);
   console.log(`  Rust Sim / Verify Router   : ${baseUrl}/routers/rustsim/health`);
   if (gmeConfig.authentication.enable) {
-    console.log(`  Auth & Profile             : Required (${baseUrl}/profile/login · ${baseUrl}/logout)`);
+    const oauthCfg = gmeConfig.authentication.oauth || {};
+    const authSummary = oauthCfg.enable
+      ? `OAuth (${oauthCfg.providerName || "oauth"})${gmeConfig.authentication.allowPasswordLogin ? " + Password" : ""}`
+      : "Local Password";
+    console.log(`  Auth & Profile             : ${authSummary} (${baseUrl}/profile/login · ${baseUrl}/logout)`);
     if (
       !(
         process.env.GITHUB_APP_CLIENT_ID &&
@@ -53,12 +57,12 @@ server.start((err) => {
         process.env.TOKEN_ENCRYPTION_KEY
       )
     ) {
-      console.warn(
-        "  [!] Warning: authentication is enabled, but GITHUB_APP_CLIENT_ID / GITHUB_APP_CLIENT_SECRET / TOKEN_ENCRYPTION_KEY are not set in .env.",
+      console.info(
+        "  [i] Note: Layer 2 GitHub App sync is disabled until GITHUB_APP_CLIENT_ID / GITHUB_APP_CLIENT_SECRET / TOKEN_ENCRYPTION_KEY are set in .env.",
       );
     }
   } else {
-    console.log("  Auth mode                  : Guest/Dev (set RUSTY_AUTH=true or NODE_ENV=prod for OAuth)");
+    console.log("  Auth mode                  : Guest/Dev (set RUSTY_AUTH=true or NODE_ENV=prod for Layer 1 auth)");
   }
   console.log("==========================================================");
 });

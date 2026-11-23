@@ -90,14 +90,21 @@ function createRouter(middlewareOpts) {
   // Runtime metadata for the Studio SPA
   r.get("/api/info", (_req, res) => {
     const docsAvailable = fs.existsSync(DOCS_DIST_DIR);
+    const authCfg = (gmeConfig && gmeConfig.authentication) || {};
+    const oauthCfg = authCfg.oauth || {};
+    const oauthEnabled = Boolean(authEnabled && oauthCfg.enable);
+    const oauthProvider = oauthEnabled ? oauthCfg.providerName || "oauth" : null;
     res.json({
       appName: "Rusty Studio",
       defaultSeed: (gmeConfig.seedProjects && gmeConfig.seedProjects.defaultProject) || "RustySeed",
       authEnabled,
+      oauthEnabled,
+      oauthProvider,
       loginUrl: authEnabled
-        ? (gmeConfig.authentication && gmeConfig.authentication.logInUrl) || "/profile/login"
+        ? authCfg.logInUrl || "/profile/login"
         : null,
       logoutUrl: authEnabled ? "/logout" : null,
+      githubConnectUrl: authEnabled ? "/profile/github/connect" : null,
       githubAppConfigured: Boolean(
         process.env.GITHUB_APP_CLIENT_ID &&
           process.env.GITHUB_APP_CLIENT_SECRET &&

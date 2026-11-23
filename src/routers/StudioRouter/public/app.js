@@ -726,6 +726,8 @@
       state.gitStatus = st;
       if (st.hasGithubToken) {
         setBadge("gitStatusBadge", `GitHub: @${st.githubLogin || st.userId}`, "badge-ok");
+      } else if (st.githubAppConfigured && st.authenticated) {
+        setBadge("gitStatusBadge", "GitHub: Connect via User Profile", "badge-warn");
       } else if (st.githubAppConfigured) {
         setBadge("gitStatusBadge", "GitHub: Sign in via User Profile", "badge-warn");
       } else {
@@ -2267,7 +2269,7 @@
         }
       };
     } catch (err) {
-      dropdown.innerHTML = '<option value="">(Sign in via User Profile to browse repositories)</option>';
+      dropdown.innerHTML = '<option value="">(Connect GitHub in User Profile to browse repositories)</option>';
       $("repoPickerStatus").textContent = err.message;
     }
   }

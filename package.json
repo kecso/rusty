@@ -36,10 +36,13 @@
     "express": "^4.21.2",
     "monaco-editor": "^0.57.0",
     "webgme": "^2.23.0",
-    "webgme-git": "git+https://github.com/kecso/webgme-git.git"
+    "webgme-git": "github:kecso/webgme-git"
   },
   "devDependencies": {
     "vitepress": "^1.6.4",
     "webgme-json-importer": "github:kecso/webgme-json-importer"
+  },
+  "overrides": {
+    "webgme-engine": "github:webgme/webgme-engine#main"
   }
 }

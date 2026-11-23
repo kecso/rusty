@@ -13,9 +13,13 @@ git checkout -b dev
 git push -u origin dev
 ```
 
-## 2. Configure GitHub App Credentials
+## 2. Configure Layer 1 Sign-In & Layer 2 GitHub App Sync
 
-Follow [`webgme-git/docs/setup-github-app.md`](https://github.com/kecso/webgme-git/blob/main/docs/setup-github-app.md) to set up a GitHub App (callback URL: `http://127.0.0.1:8888/auth/github/callback`, Contents: Read & write) installed on **`<your-username>/rusty`**, then configure `rusty/.env`:
+Rusty uses WebGME's two-layer authentication model:
+1. **Layer 1 (`webgme-engine`)**: Authenticates your WebGME user account (via local username/password or external OAuth 2.0 / OIDC such as GitHub, Google, or Keycloak at `${WEBGME_BASE_URL}/oauth/callback`).
+2. **Layer 2 (`webgme-git`)**: Connects your **GitHub App** (1-to-1 per WebGME user) to push/pull repository commits via `/profile/github/connect`.
+
+Follow [`webgme-git/docs/setup-github-app.md`](https://github.com/kecso/webgme-git/blob/main/docs/setup-github-app.md) to set up a GitHub App (User authorization callback URL: `http://127.0.0.1:8888/profile/github/callback`, Contents: Read & write) installed on **`<your-username>/rusty`**, then configure `rusty/.env`:
 
 ```bash
 cp .env.example .env
@@ -24,6 +28,12 @@ openssl rand -hex 32   # paste into TOKEN_ENCRYPTION_KEY
 
 ```ini
 RUSTY_AUTH=true
+# Optional external OAuth / OIDC for Layer 1 login (callback: http://127.0.0.1:8888/oauth/callback):
+# OAUTH_PROVIDER=github
+# OAUTH_CLIENT_ID=...
+# OAUTH_CLIENT_SECRET=...
+
+# Layer 2 GitHub App (callback: http://127.0.0.1:8888/profile/github/callback):
 GITHUB_APP_ID=...
 GITHUB_APP_CLIENT_ID=...
 GITHUB_APP_CLIENT_SECRET=...
@@ -33,17 +43,20 @@ TOKEN_ENCRYPTION_KEY=...
 
 Restart `npm start`.
 
-## 3. Connect Your Machine Directory Once (`<your-username>/rusty@dev`)
+## 3. Connect GitHub & Link Your Machine Directory (`<your-username>/rusty@dev`)
 
-1. Sign in at `http://127.0.0.1:8888/profile/login`, open **User Profile** (`/profile`) in Studio's top bar, and link **`<your-username>/rusty`** (`read-write`) to `RustyDemo`.
-2. Open `http://127.0.0.1:8888/routers/studio` (`GitHub: @<your-login>`).
-3. Click **`Connect Git Repository…`** in the Git Repository bar:
+1. Sign in at `http://127.0.0.1:8888/profile/login` (using your Layer 1 OAuth provider or WebGME credentials).
+2. Open **User Profile** (`/profile`) from Studio's top bar:
+   - In the **Account** tab (`/profile#account`), click **Connect GitHub** (`/profile/github/connect`) to link your GitHub account 1-to-1.
+   - Link **`<your-username>/rusty`** (`read-write`) to `RustyDemo`.
+3. Return to `http://127.0.0.1:8888/routers/studio` (`GitHub: @<your-login>`).
+4. Click **`Connect Git Repository…`** in the Git Repository bar:
    - **Owner**: `<your-username>`
    - **Repo**: `rusty`
    - **Branch**: `dev`
    - **Machine Directory**: `examples/smart-thermostat`
    - Choose **Connect current design** and click **Connect Repository**.
-4. Once connected, the Git Repository bar displays your read-only repository target (`<your-username>/rusty@dev · examples/smart-thermostat`), and every State inspector resolves directly to `<dir>/src/states/<state>.rs`.
+5. Once connected, the Git Repository bar displays your read-only repository target (`<your-username>/rusty@dev · examples/smart-thermostat`), and every State inspector resolves directly to `<dir>/src/states/<state>.rs`.
 
 ## 4. Edit-Fetch-Commit-Push (`⌘S`), Auto-Rebase & HTTP 409
 

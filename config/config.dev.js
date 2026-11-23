@@ -9,6 +9,9 @@ const validateConfig = require("webgme/config/validator");
 if (process.env.RUSTY_AUTH !== "true") {
   config.authentication.enable = false;
   config.authentication.allowGuests = true;
+  if (config.authentication.oauth) {
+    config.authentication.oauth.enable = false;
+  }
 }
 
 if (

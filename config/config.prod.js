@@ -4,19 +4,21 @@
 /**
  * User-facing / production configuration (`NODE_ENV=prod` or `npm run start:prod`).
  *
- * Enforces GitHub-native authentication (`allowGuests: false`), disables WebGME's
- * generic UI, and serves Rusty Studio directly at `/` unless explicitly
- * overridden with `RUSTY_SERVE_WEBGME_UI=true`.
+ * Enforces Layer 1 WebGME authentication (`allowGuests: false`, OAuth/OIDC if
+ * configured or password login otherwise), disables WebGME's generic UI, and
+ * serves Rusty Studio directly at `/` unless `RUSTY_SERVE_WEBGME_UI=true`.
  */
 
 delete require.cache[require.resolve("./config.default")];
 const config = require("./config.default");
 const validateConfig = require("webgme/config/validator");
-const gitConfig = require("webgme-git/config/config.webgme.fragment");
+const { configureLayer1OAuth } = require("./configureOAuth");
 
-Object.assign(config.authentication, gitConfig.authentication);
 config.authentication.enable = true;
 config.authentication.allowGuests = false;
+config.authentication.logInUrl = "/profile/login";
+config.authentication.logOutUrl = "/profile/login";
+configureLayer1OAuth(config, process.env);
 config.authentication.jwt.privateKey =
   process.env.JWT_PRIVATE_KEY_PATH || config.authentication.jwt.privateKey;
 config.authentication.jwt.publicKey =

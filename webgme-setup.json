@@ -10,10 +10,6 @@
       }
     },
     "routers": {
-      "gitrouter": {
-        "src": "src/routers/GitRouterAdapter/GitRouterAdapter.js",
-        "mount": "routers/gitrouter"
-      },
       "rustsim": {
         "src": "src/routers/RustSimRouter/RustSimRouter.js",
         "mount": "routers/rustsim"
@@ -35,7 +31,13 @@
     "decorators": {},
     "layouts": {},
     "plugins": {},
-    "routers": {},
+    "routers": {
+      "gitrouter": {
+        "src": "node_modules/webgme-git/src/routers/GitRouter.js",
+        "mount": "routers/gitrouter",
+        "project": "webgme-git"
+      }
+    },
     "seeds": {},
     "visualizers": {}
   }

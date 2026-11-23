@@ -35,7 +35,7 @@ Open **`http://127.0.0.1:8888/routers/studio`** to tour the pre-seeded **`Blinky
 | --- | --- |
 | `npm start` / `npm run start:dev` | Start in Dev mode (`/routers/studio`, WebGME generic UI at `/`, optional guest access) |
 | `npm run start:prod` | Start in User-Facing mode (`/` -> Studio, auth required, `User Profile` & `Log out`) |
-| `npm test` | Run all 7 Node unit/integration test suites (28 tests) |
+| `npm test` | Run all 8 Node unit/integration/E2E test suites (30 tests) |
 | `npm run build:seed` | Rebuild `seed/RustySeed.webgmex` purely in memory (no MongoDB required) |
 | `npm run sync:examples` | Regenerate `examples/blinky` and `examples/smart-thermostat` crates + manifests |
 | `npm run docs:dev` / `npm run docs:build` | Preview or build the VitePress documentation portal (`/docs`) |

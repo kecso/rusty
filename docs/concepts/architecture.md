@@ -38,7 +38,7 @@ Rusty avoids storing canonical source code in opaque binary database blobs. Inst
 | **Design-Impact + Hook Analyzer** | Browser Edit-Time Checker | [`src/common/rustAnalyzer.js`](https://github.com/kecso/rusty/blob/main/src/common/rustAnalyzer.js) |
 | **Standalone Cargo Crate Codegen (`TransitionId`, `select_transition`, `execute_transition`)** | Shared + WebGME Plugin | [`src/common/rustCodegen.js`](https://github.com/kecso/rusty/blob/main/src/common/rustCodegen.js) |
 | **GitHub Directory Importer** | Shared + WebGME Plugin | [`src/common/rustImporter.js`](https://github.com/kecso/rusty/blob/main/src/common/rustImporter.js) |
-| **Dual-Deployment Server Modes** | WebGME Config & Studio Router | [`config/`](https://github.com/kecso/rusty/tree/main/config) & [`StudioRouter.js`](https://github.com/kecso/rusty/blob/main/src/routers/StudioRouter/StudioRouter.js) |
+| **Dual-Deployment Server Modes & Auth** | Layer 1 (`webgme-engine`) + Layer 2 (`webgme-git`) + Studio Router | [`config/`](https://github.com/kecso/rusty/tree/main/config) & [`StudioRouter.js`](https://github.com/kecso/rusty/blob/main/src/routers/StudioRouter/StudioRouter.js) |
 
 ## Three-Layer Safety Net
 
