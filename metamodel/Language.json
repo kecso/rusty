@@ -4,46 +4,12 @@
   },
   "children": [
     {
-      "id": "@meta:GitArtifactLink",
-      "attributes": {
-        "name": "GitArtifactLink",
-        "gitOwner": "",
-        "gitRepo": "",
-        "gitBranch": "main",
-        "gitPath": "",
-        "gitArtifactType": "file",
-        "gitBaseCommitSha": ""
-      },
-      "attribute_meta": {
-        "name": { "type": "string" },
-        "gitOwner": { "type": "string" },
-        "gitRepo": { "type": "string" },
-        "gitBranch": { "type": "string" },
-        "gitPath": { "type": "string" },
-        "gitArtifactType": {
-          "type": "string",
-          "enum": ["file", "dir"]
-        },
-        "gitBaseCommitSha": { "type": "string" }
-      },
-      "pointers": {
-        "base": "/1"
-      },
-      "mixins": [],
-      "registry": {
-        "position": { "x": 120, "y": 80 },
-        "DisplayFormat": "$name",
-        "isAbstract": true
-      }
-    },
-    {
       "id": "@meta:StateMachine",
       "attributes": {
         "name": "StateMachine",
         "crateName": "rusty_machine",
         "description": "",
-        "tickMs": 800,
-        "gitArtifactType": "dir"
+        "tickMs": 800
       },
       "attribute_meta": {
         "name": { "type": "string" },
@@ -54,7 +20,7 @@
       "pointers": {
         "base": "/1"
       },
-      "mixins": ["@meta:GitArtifactLink"],
+      "mixins": [],
       "registry": {
         "position": { "x": 380, "y": 80 },
         "DisplayFormat": "$name"
@@ -79,8 +45,7 @@
         "entryCode": "",
         "exitCode": "",
         "codeCache": "",
-        "depsSignature": "",
-        "gitArtifactType": "file"
+        "depsSignature": ""
       },
       "attribute_meta": {
         "name": { "type": "string" },
@@ -96,7 +61,7 @@
       "pointers": {
         "base": "/1"
       },
-      "mixins": ["@meta:GitArtifactLink"],
+      "mixins": [],
       "registry": {
         "position": { "x": 120, "y": 280 },
         "DisplayFormat": "$name"

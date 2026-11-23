@@ -1,15 +1,21 @@
 {
-  "metaPaths": {
-    "GitArtifactLink": "/m",
-    "StateMachine": "/n",
-    "State": "/f",
-    "Transition": "/W",
-    "GlobalVar": "/g",
-    "EventDef": "/J"
+  "gitSeedLibrary": {
+    "projectId": "guest+git-seed",
+    "branchName": "master",
+    "commitHash": "#6f4fcc886d5dd59368cc13efe09f9b321ece0d80",
+    "hash": "#62b86d9e25a84e4396a6aa899e3deff00fde6352"
   },
-  "starterMachinePath": "/w",
+  "metaPaths": {
+    "GitArtifactLink": "/x/E",
+    "StateMachine": "/M",
+    "State": "/9",
+    "Transition": "/z",
+    "GlobalVar": "/E",
+    "EventDef": "/p"
+  },
+  "starterMachinePath": "/y",
   "starterMachinePaths": {
-    "BlinkyController": "/w",
-    "SmartThermostat": "/S"
+    "BlinkyController": "/y",
+    "SmartThermostat": "/m"
   }
 }

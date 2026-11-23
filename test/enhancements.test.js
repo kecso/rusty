@@ -284,5 +284,45 @@ describe("Rusty Studio V3 Enhancements (Codec, Impact, Determinism, Layout, Impo
     const heatingNode = objs.find((o) => o.atr && o.atr.name === "Heating");
     assert.ok(heatingNode && heatingNode.atr.entryCode.includes("cycle_ticks = 0"));
     assert.equal(heatingNode.atr.priority, undefined);
+
+    // Verify `webgme-git` `git-seed` is imported as a genuine WebGME library and mixed into StateMachine & State
+    const rootObj = objs.find((o) => o._id === project.rootHash);
+    const gitSeedLibRoot = objs.find(
+      (o) => o.atr && o.atr.name === "git-seed" && o.atr._libraryInfo,
+    );
+    assert.ok(gitSeedLibRoot, "Expected git-seed WebGME library root with _libraryInfo in RustySeed.webgmex");
+    const libRelid = Object.keys(rootObj).find((k) => rootObj[k] === gitSeedLibRoot._id);
+    assert.ok(libRelid, "git-seed library must be mounted directly under ROOT");
+
+    const topChildIds = new Set(
+      Object.entries(rootObj)
+        .filter(([k, v]) => typeof v === "string" && !k.startsWith("_"))
+        .map(([, v]) => v),
+    );
+    const localGitLink = objs.find(
+      (o) => o.atr && o.atr.name === "GitArtifactLink" && topChildIds.has(o._id),
+    );
+    assert.equal(localGitLink, undefined, "GitArtifactLink must come from git-seed library, not be duplicated under ROOT");
+
+    const libGitLinkRel = Object.keys(gitSeedLibRoot).find((k) => {
+      if (typeof gitSeedLibRoot[k] !== "string" || k.startsWith("_")) return false;
+      const child = objs.find((o) => o._id === gitSeedLibRoot[k]);
+      return child && child.atr && child.atr.name === "GitArtifactLink";
+    });
+    assert.ok(libGitLinkRel, "Expected GitArtifactLink inside git-seed library");
+    const libGitLinkPath = `/${libRelid}/${libGitLinkRel}`;
+
+    const smMetaNode = objs.find((o) => o.atr && o.atr.name === "StateMachine" && o.atr.crateName);
+    const stateMetaNode = objs.find((o) => o.atr && o.atr.name === "State" && typeof o.atr.entryCode === "string");
+    const smPath = `/${Object.keys(rootObj).find((k) => rootObj[k] === smMetaNode._id)}`;
+    const statePath = `/${Object.keys(rootObj).find((k) => rootObj[k] === stateMetaNode._id)}`;
+    const hasMixinEntry = (nodePath) =>
+      Object.entries(rootObj.ovr || {}).some(
+        ([k, v]) => k.startsWith(`${nodePath}/_sets/_mixins/`) && v && v.member === libGitLinkPath,
+      );
+    assert.equal(hasMixinEntry(smPath), true, `StateMachine (${smPath}) must mixin ${libGitLinkPath}`);
+    assert.equal(hasMixinEntry(statePath), true, `State (${statePath}) must mixin ${libGitLinkPath}`);
+    assert.equal(smMetaNode.atr.gitArtifactType, "dir");
+    assert.equal(stateMetaNode.atr.gitArtifactType, "file");
   });
 });

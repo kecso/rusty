@@ -1,14 +1,14 @@
-# Reference: WebGME Metamodel (`Language.json`)
+# Reference: WebGME Metamodel (`Language.json` + `git-seed` Library)
 
-Rusty defines 6 meta-nodes in [`metamodel/Language.json`](https://github.com/kecso/rusty/blob/main/metamodel/Language.json) compiled into [`seed/RustySeed.webgmex`](https://github.com/kecso/rusty/blob/main/seed/RustySeed.webgmex).
+Rusty defines 5 domain meta-nodes in [`metamodel/Language.json`](https://github.com/kecso/rusty/blob/main/metamodel/Language.json) and imports [`webgme-git/seed/git-seed.webgmex`](https://github.com/kecso/webgme-git/blob/main/seed/git-seed.webgmex) as a read-only **`git-seed`** WebGME library into [`seed/RustySeed.webgmex`](https://github.com/kecso/rusty/blob/main/seed/RustySeed.webgmex).
 
 ## Meta-Nodes & Attributes
 
 | Meta Node | Base / Mixin | Containment / Pointers / Sets | Attributes |
 | --- | --- | --- | --- |
-| **`GitArtifactLink`** *(abstract)* | `FCO` | Mixed into `StateMachine` and `State` | `gitOwner`, `gitRepo`, `gitBranch`, `gitPath`, `gitArtifactType` (`file` \| `dir`), `gitBaseCommitSha` |
-| **`StateMachine`** | `FCO` + `GitArtifactLink` | Child of `ROOT`; contains `State`, `Transition`, `GlobalVar`, `EventDef` | `name`, `crateName`, `description`, `tickMs`, plus machine-level Git directory attributes (`gitArtifactType = "dir"`) |
-| **`State`** | `FCO` + `GitArtifactLink` | Child of `StateMachine`; **`dependsOn`** Set → `{GlobalVar, EventDef, State}` | `name`, `description`, `isInitial`, `isFinal`, `color`, `entryCode`, `exitCode`, `codeCache`, **`depsSignature`** |
+| **`git-seed.GitArtifactLink`** *(library mixin)* | Imported via `core.addLibrary("git-seed", ...)` | Mixed into `StateMachine` and `State` | `gitOwner`, `gitRepo`, `gitBranch`, `gitPath`, `gitArtifactType` (`file` \| `dir`), `gitBaseCommitSha` |
+| **`StateMachine`** | `FCO` + `git-seed.GitArtifactLink` | Child of `ROOT`; contains `State`, `Transition`, `GlobalVar`, `EventDef` | `name`, `crateName`, `description`, `tickMs`, plus machine-level Git directory attributes (`gitArtifactType = "dir"`) |
+| **`State`** | `FCO` + `git-seed.GitArtifactLink` | Child of `StateMachine`; **`dependsOn`** Set → `{GlobalVar, EventDef, State}` | `name`, `description`, `isInitial`, `isFinal`, `color`, `entryCode`, `exitCode`, `codeCache`, **`depsSignature`** |
 | **`Transition`** | `FCO` | Child of `StateMachine`; `src -> State`, `dst -> State` (`1..1`); **`dependsOn`** Set → `{GlobalVar, EventDef, State}` | `name`, `event`, `guard`, `action`, `reenter`, **`depsSignature`** |
 | **`GlobalVar`** | `FCO` | Child of `StateMachine` | `name`, `rustType` (`bool` \| `i32` \| `i64` \| `u32` \| `f64` \| `String`), `initialValue`, `minValue`, `maxValue`, `description` |
 | **`EventDef`** | `FCO` | Child of `StateMachine` | `name`, `payloadType` (empty for unit event, or Rust type e.g. `f64`), `description` |

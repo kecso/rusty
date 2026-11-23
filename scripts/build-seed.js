@@ -38,6 +38,11 @@ WebGME.addToRequireJsPaths(gmeConfig);
 
 const ENGINE_DIR = path.dirname(require.resolve("webgme-engine/package.json"));
 const EMPTY_SEED = require.resolve("webgme-engine/seeds/EmptyProject.webgmex");
+const GIT_SEED_NAME = "git-seed";
+const GIT_SEED = path.join(
+  path.dirname(require.resolve("webgme-git/package.json")),
+  "seed/git-seed.webgmex",
+);
 const Logger = require(path.join(ENGINE_DIR, "src/server/logger"));
 const SafeStorage = require(path.join(ENGINE_DIR, "src/server/storage/safestorage"));
 const Memory = require(path.join(ENGINE_DIR, "src/server/storage/memory"));
@@ -207,7 +212,7 @@ function instantiateMachine(core, root, meta, model, rootPos) {
   return core.getPath(smNode);
 }
 
-async function applyRustySeed(core, root, language) {
+async function applyRustySeed(core, project, root, language, gitSeedJson) {
   const importer = new Importer(core, root);
 
   await importer.apply(root, {
@@ -215,26 +220,45 @@ async function applyRustySeed(core, root, language) {
     children: language.children || [],
   });
 
+  // Import webgme-git's `git-seed.webgmex` as a genuine read-only WebGME library
+  await storageUtils.insertProjectJson(project, gitSeedJson, {
+    commitMessage: "Import webgme-git git-seed library objects",
+  });
+  await core.addLibrary(root, GIT_SEED_NAME, gitSeedJson.rootHash, {
+    projectId: gitSeedJson.projectId || "guest+git-seed",
+    branchName: gitSeedJson.branchName || "master",
+    commitHash: gitSeedJson.commitHash,
+  });
+
+  const libMeta = core.getLibraryMetaNodes(root, GIT_SEED_NAME);
+  const gitLink = Object.values(libMeta).find(
+    (n) => core.getAttribute(n, "name") === "GitArtifactLink",
+  );
+  if (!gitLink || !core.isLibraryElement(gitLink) || core.getNamespace(gitLink) !== GIT_SEED_NAME) {
+    throw new Error(`Failed to locate ${GIT_SEED_NAME}.GitArtifactLink inside imported library`);
+  }
+
   const children = await core.loadChildren(root);
   const fco = await core.loadByPath(root, "/1");
-  const gitLink = findByName(core, children, "GitArtifactLink");
   const stateMachine = findByName(core, children, "StateMachine");
   const stateMeta = findByName(core, children, "State");
   const transitionMeta = findByName(core, children, "Transition");
   const globalVarMeta = findByName(core, children, "GlobalVar");
   const eventDefMeta = findByName(core, children, "EventDef");
 
-  const metaNodes = [fco, gitLink, stateMachine, stateMeta, transitionMeta, globalVarMeta, eventDefMeta];
-  if (metaNodes.some((n) => !n)) {
+  const rustyMetaNodes = [fco, stateMachine, stateMeta, transitionMeta, globalVarMeta, eventDefMeta];
+  if (rustyMetaNodes.some((n) => !n)) {
     throw new Error(
       "Missing expected meta nodes after JSON apply. Found: " +
         children.map((c) => core.getAttribute(c, "name")).join(", "),
     );
   }
 
-  // Ensure mixins are wired via Core API
+  // Wire mixins directly to the `git-seed` library's GitArtifactLink and set defaults
   core.addMixin(stateMachine, core.getPath(gitLink));
   core.addMixin(stateMeta, core.getPath(gitLink));
+  core.setAttribute(stateMachine, "gitArtifactType", "dir");
+  core.setAttribute(stateMeta, "gitArtifactType", "file");
 
   // Computed Set relationship `dependsOn` from State & Transition -> GlobalVar / EventDef / State
   for (const srcMeta of [stateMeta, transitionMeta]) {
@@ -244,12 +268,12 @@ async function applyRustySeed(core, root, language) {
     }
   }
 
-  // ROOT containment rules
-  for (const m of metaNodes) {
+  // ROOT containment rules (only Rusty's own concepts; git-seed nodes stay library-owned)
+  for (const m of rustyMetaNodes) {
     core.setChildMeta(root, m, -1, -1);
   }
 
-  // Register all meta nodes in MetaAspectSet + sheet
+  // Register Rusty meta nodes + `git-seed.GitArtifactLink` on the MetaAspectSet & sheet
   const positions = {
     FCO: { x: 80, y: 40 },
     GitArtifactLink: { x: 120, y: 140 },
@@ -260,7 +284,7 @@ async function applyRustySeed(core, root, language) {
     EventDef: { x: 720, y: 310 },
   };
 
-  for (const m of metaNodes) {
+  for (const m of rustyMetaNodes) {
     core.addMember(root, "MetaAspectSet", m);
     core.addMember(root, META_SHEET, m);
     const name = core.getAttribute(m, "name");
@@ -268,6 +292,10 @@ async function applyRustySeed(core, root, language) {
     core.setMemberRegistry(root, "MetaAspectSet", core.getPath(m), "position", pos);
     core.setMemberRegistry(root, META_SHEET, core.getPath(m), "position", pos);
   }
+
+  core.addMember(root, META_SHEET, gitLink);
+  core.setMemberRegistry(root, "MetaAspectSet", core.getPath(gitLink), "position", positions.GitArtifactLink);
+  core.setMemberRegistry(root, META_SHEET, core.getPath(gitLink), "position", positions.GitArtifactLink);
 
   core.setRegistry(root, "MetaSheets", [
     {
@@ -284,6 +312,7 @@ async function applyRustySeed(core, root, language) {
   const thermostatPath = instantiateMachine(core, root, meta, getSmartThermostatModel(), { x: 520, y: 120 });
 
   return {
+    gitSeedLibrary: core.getLibraryInfo(root, GIT_SEED_NAME),
     metaPaths: {
       GitArtifactLink: core.getPath(gitLink),
       StateMachine: core.getPath(stateMachine),
@@ -302,6 +331,9 @@ async function applyRustySeed(core, root, language) {
 
 async function main() {
   const language = JSON.parse(fs.readFileSync(LANGUAGE_JSON, "utf8"));
+  const gitSeedJson = JSON.parse(
+    execFileSync("unzip", ["-p", GIT_SEED, "project.json"], { encoding: "utf8" }),
+  );
   const logger = Logger.create("gme:rusty-seed", gmeConfig.server.log, false);
 
   const storage = new SafeStorage(
@@ -329,7 +361,7 @@ async function main() {
     const core = new Core(project, { globConf: gmeConfig, logger: logger.fork("core") });
     const root = await core.loadRoot(emptyJson.rootHash);
 
-    const summary = await applyRustySeed(core, root, language);
+    const summary = await applyRustySeed(core, project, root, language, gitSeedJson);
     const persisted = await core.persist(root);
     const commitRes = await project.makeCommit(
       "master",

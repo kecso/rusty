@@ -157,6 +157,14 @@
         machines.push(this._extractMachine(node));
       }
 
+      const ORDER = { BlinkyController: 0, SmartThermostat: 1 };
+      machines.sort((a, b) => {
+        const oa = ORDER[a.name] ?? 2;
+        const ob = ORDER[b.name] ?? 2;
+        if (oa !== ob) return oa - ob;
+        return String(a.name || "").localeCompare(String(b.name || ""));
+      });
+
       return machines;
     }
 
