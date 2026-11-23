@@ -2,18 +2,21 @@
 "use strict";
 
 /**
- * WebGME RestRouter mounted at `/` (`mount: ""`) that controls whether `/`
- * serves Rusty Studio and whether the WebGME Generic UI remains exposed.
+ * WebGME RestRouter mounted at `/` (`mount: ""`) that controls:
+ *   - Serving Rusty Studio at `/` / `/index.html` based on deployment flags
+ *   - Public `/docs` shortcut to locally built VitePress docs when present
  *
  * Mounted before WebGME's built-in `['', '/', '/index.html']` route in standalone.js,
- * while letting all API, gme-dist, gmeConfig.json, socket.io, and /routers/* paths
+ * while letting all API, gme-dist, gmeConfig.json, socket.io, /profile, and /routers/* paths
  * pass through cleanly.
  */
 
 const express = require("express");
+const fs = require("fs");
 const path = require("path");
 
 const STUDIO_INDEX = path.resolve(__dirname, "../StudioRouter/public/index.html");
+const DOCS_DIST_DIR = path.resolve(__dirname, "../../../docs/.vitepress/dist");
 
 function resolveUiFlags(middlewareOpts) {
   const gmeConfig = (middlewareOpts && middlewareOpts.gmeConfig) || {};
@@ -31,12 +34,26 @@ function resolveUiFlags(middlewareOpts) {
 function createRouter(middlewareOpts) {
   const opts = middlewareOpts || {};
   const { serveWebGMEUI, rootToStudio } = resolveUiFlags(opts);
+  const authEnabled = Boolean(
+    opts.gmeConfig && opts.gmeConfig.authentication && opts.gmeConfig.authentication.enable,
+  );
   const authMw =
-    typeof opts.ensureAuthenticated === "function"
+    authEnabled && typeof opts.ensureAuthenticated === "function"
       ? opts.ensureAuthenticated
       : (_req, _res, next) => next();
 
   const router = express.Router();
+
+  router.get("/docs", (_req, res, next) => {
+    if (!fs.existsSync(DOCS_DIST_DIR)) return next();
+    return res.redirect(302, "/routers/studio/docs/");
+  });
+
+  router.get("/docs/*", (req, res, next) => {
+    if (!fs.existsSync(DOCS_DIST_DIR)) return next();
+    const tail = req.originalUrl.replace(/^\/docs\/?/, "");
+    return res.redirect(302, `/routers/studio/docs/${tail}`);
+  });
 
   router.get("/", authMw, (_req, res, next) => {
     if (rootToStudio) {

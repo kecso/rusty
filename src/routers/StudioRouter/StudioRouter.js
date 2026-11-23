@@ -53,6 +53,16 @@ function createRouter(middlewareOpts) {
   const opts = middlewareOpts || {};
   const gmeConfig = opts.gmeConfig || {};
   const ui = resolveStudioOptions(gmeConfig);
+  const authEnabled = Boolean(gmeConfig.authentication && gmeConfig.authentication.enable);
+  const authMw =
+    authEnabled && typeof opts.ensureAuthenticated === "function"
+      ? opts.ensureAuthenticated
+      : (_req, _res, next) => next();
+
+  // Guard the SPA entry routes when authentication is enabled
+  r.get(["/", "/index.html"], authMw, (_req, res) => {
+    res.sendFile(path.join(PUBLIC_DIR, "index.html"));
+  });
 
   // Self-hosted Monaco Editor assets (zero CDN dependency)
   const monacoVsDir = resolveMonacoVsDir();
@@ -63,47 +73,49 @@ function createRouter(middlewareOpts) {
   // Shared UMD modules (single source of truth for Node + Browser)
   r.use("/common", express.static(COMMON_DIR));
 
-  // Built VitePress documentation & interactive tutorials
-  if (fs.existsSync(DOCS_DIST_DIR)) {
-    r.use("/docs", express.static(DOCS_DIST_DIR, { maxAge: "1h" }));
-  } else {
-    r.use("/docs", (_req, res) => {
-      res
-        .status(200)
-        .type("html")
-        .send(
-          '<!doctype html><html><body style="font-family:sans-serif;background:#0d1117;color:#e6edf3;padding:32px"><h2>Rusty Docs Not Built Yet</h2><p>Run <code>npm run docs:build</code> (or <code>npm run docs:dev</code>) to build the VitePress tutorials.</p></body></html>',
-        );
-    });
-  }
+  // Built VitePress documentation & interactive tutorials (dynamically checked)
+  const docsStatic = express.static(DOCS_DIST_DIR, { maxAge: "1h" });
+  r.use("/docs", (req, res, next) => {
+    if (fs.existsSync(DOCS_DIST_DIR)) {
+      return docsStatic(req, res, next);
+    }
+    return res
+      .status(200)
+      .type("html")
+      .send(
+        '<!doctype html><html><body style="font-family:sans-serif;background:#0d1117;color:#e6edf3;padding:32px"><h2>Rusty Docs Not Built Yet</h2><p>Run <code>npm run docs:build</code> (or <code>npm run docs:dev</code>) to build the VitePress tutorials.</p></body></html>',
+      );
+  });
 
   // Runtime metadata for the Studio SPA
   r.get("/api/info", (_req, res) => {
+    const docsAvailable = fs.existsSync(DOCS_DIST_DIR);
     res.json({
       appName: "Rusty Studio",
       defaultSeed: (gmeConfig.seedProjects && gmeConfig.seedProjects.defaultProject) || "RustySeed",
-      authEnabled: Boolean(gmeConfig.authentication && gmeConfig.authentication.enable),
+      authEnabled,
+      loginUrl: authEnabled
+        ? (gmeConfig.authentication && gmeConfig.authentication.logInUrl) || "/profile/login"
+        : null,
+      logoutUrl: authEnabled ? "/logout" : null,
       githubAppConfigured: Boolean(
         process.env.GITHUB_APP_CLIENT_ID &&
           process.env.GITHUB_APP_CLIENT_SECRET &&
           process.env.TOKEN_ENCRYPTION_KEY,
       ),
+      docsAvailable,
+      docsUrl: docsAvailable ? "/docs" : null,
       serveWebGMEUI: ui.serveWebGMEUI,
       rootToStudio: ui.rootToStudio,
       webgmeUrl: ui.webgmeUrl,
-      profileUrl: "/profile",
+      profileUrl: authEnabled ? "/profile" : null,
       gitRouterBase: "/routers/gitrouter",
       rustSimBase: "/routers/rustsim",
     });
   });
 
-  // Static Studio assets
-  r.use(express.static(PUBLIC_DIR));
-
-  // SPA fallback
-  r.get("/", (_req, res) => {
-    res.sendFile(path.join(PUBLIC_DIR, "index.html"));
-  });
+  // Static Studio assets (index: false so / and /index.html always pass through authMw above)
+  r.use(express.static(PUBLIC_DIR, { index: false }));
 
   return r;
 }

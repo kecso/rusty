@@ -81,9 +81,17 @@ function sanitizeEventArg(ev) {
     .replace(/[^a-zA-Z0-9_.:-]/g, "");
 }
 
-function initialize(/* middlewareOpts */) {
+function initialize(middlewareOpts) {
   if (initialized) return;
   initialized = true;
+
+  const opts = middlewareOpts || {};
+  const gmeConfig = opts.gmeConfig || {};
+  const authEnabled = Boolean(gmeConfig.authentication && gmeConfig.authentication.enable);
+  const authMw =
+    authEnabled && typeof opts.ensureAuthenticated === "function"
+      ? opts.ensureAuthenticated
+      : (_req, _res, next) => next();
 
   const jsonParser = express.json({ limit: "2mb" });
   router.use((req, res, next) => {
@@ -103,7 +111,7 @@ function initialize(/* middlewareOpts */) {
     });
   });
 
-  router.post("/generate", (req, res) => {
+  router.post("/generate", authMw, (req, res) => {
     try {
       const model = req.body && req.body.model;
       if (!model || !Array.isArray(model.states)) {
@@ -117,7 +125,7 @@ function initialize(/* middlewareOpts */) {
     }
   });
 
-  router.post("/check", async (req, res) => {
+  router.post("/check", authMw, async (req, res) => {
     const model = req.body && req.body.model;
     if (!model || !Array.isArray(model.states) || model.states.length === 0) {
       res.status(400).json({ error: "Model must include at least one state" });
@@ -148,7 +156,7 @@ function initialize(/* middlewareOpts */) {
     }
   });
 
-  router.post("/run", async (req, res) => {
+  router.post("/run", authMw, async (req, res) => {
     const model = req.body && req.body.model;
     const rawEvents = Array.isArray(req.body && req.body.events) ? req.body.events : [];
     if (!model || !Array.isArray(model.states) || model.states.length === 0) {

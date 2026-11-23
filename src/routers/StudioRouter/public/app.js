@@ -404,13 +404,35 @@
       const infoRes = await fetch("/routers/studio/api/info", { credentials: "same-origin" });
       state.info = await infoRes.json();
     } catch (_err) {
-      state.info = { defaultSeed: "RustySeed", serveWebGMEUI: true, webgmeUrl: "/" };
+      state.info = {
+        defaultSeed: "RustySeed",
+        docsAvailable: false,
+        authEnabled: false,
+        serveWebGMEUI: true,
+        webgmeUrl: "/",
+      };
+    }
+
+    const showDocs = Boolean(state.info.docsAvailable);
+    $("linkDocs").classList.toggle("hidden", !showDocs);
+    if (showDocs) {
+      $("linkDocs").href = state.info.docsUrl || "/docs";
     }
 
     const showWebGME = state.info.serveWebGMEUI !== false;
     $("linkWebGME").classList.toggle("hidden", !showWebGME);
     if (showWebGME) {
       $("linkWebGME").href = state.info.webgmeUrl || "/";
+    }
+
+    const showAuthLinks = Boolean(state.info.authEnabled);
+    $("linkProfile").classList.toggle("hidden", !showAuthLinks || !state.info.profileUrl);
+    if (showAuthLinks && state.info.profileUrl) {
+      $("linkProfile").href = state.info.profileUrl;
+    }
+    $("linkLogout").classList.toggle("hidden", !showAuthLinks || !state.info.logoutUrl);
+    if (showAuthLinks && state.info.logoutUrl) {
+      $("linkLogout").href = state.info.logoutUrl;
     }
 
     refreshGitStatus();

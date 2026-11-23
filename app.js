@@ -3,6 +3,8 @@
 
 require("dotenv").config();
 
+const fs = require("fs");
+const path = require("path");
 const gmeConfig = require("./config");
 const webgme = require("webgme");
 
@@ -23,6 +25,7 @@ server.start((err) => {
     {};
   const serveWebGMEUI = studioOpts.serveWebGMEUI !== false;
   const rootToStudio = Boolean(studioOpts.rootToStudio || !serveWebGMEUI);
+  const docsAvailable = fs.existsSync(path.join(__dirname, "docs/.vitepress/dist"));
   const studioUrl = rootToStudio ? `${baseUrl}/` : `${baseUrl}/routers/studio`;
   const webgmeUrl = !serveWebGMEUI
     ? "Disabled (user-facing studio-only mode)"
@@ -35,13 +38,27 @@ server.start((err) => {
   if (rootToStudio) {
     console.log(`  Studio Direct Alias        : ${baseUrl}/routers/studio`);
   }
+  if (docsAvailable) {
+    console.log(`  Docs & Tutorials           : ${baseUrl}/docs`);
+  }
   console.log(`  WebGME Generic UI          : ${webgmeUrl}`);
   console.log(`  webgme-git Router          : ${baseUrl}/routers/gitrouter/status`);
   console.log(`  Rust Sim / Verify Router   : ${baseUrl}/routers/rustsim/health`);
   if (gmeConfig.authentication.enable) {
-    console.log(`  GitHub Profile & Admin     : ${baseUrl}/profile`);
+    console.log(`  Auth & Profile             : Required (${baseUrl}/profile/login · ${baseUrl}/logout)`);
+    if (
+      !(
+        process.env.GITHUB_APP_CLIENT_ID &&
+        process.env.GITHUB_APP_CLIENT_SECRET &&
+        process.env.TOKEN_ENCRYPTION_KEY
+      )
+    ) {
+      console.warn(
+        "  [!] Warning: authentication is enabled, but GITHUB_APP_CLIENT_ID / GITHUB_APP_CLIENT_SECRET / TOKEN_ENCRYPTION_KEY are not set in .env.",
+      );
+    }
   } else {
-    console.log("  Auth mode                  : Guest/Dev (set RUSTY_AUTH=true for GitHub OAuth)");
+    console.log("  Auth mode                  : Guest/Dev (set RUSTY_AUTH=true or NODE_ENV=prod for OAuth)");
   }
   console.log("==========================================================");
 });

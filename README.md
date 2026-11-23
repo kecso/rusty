@@ -64,16 +64,16 @@ npm start
 
 Open (in dev mode — `npm start` / `npm run start:dev`):
 - **Rusty Studio**: `http://127.0.0.1:8888/routers/studio`
-- **Built Tutorials**: `http://127.0.0.1:8888/routers/studio/docs/`
+- **Built Tutorials**: `http://127.0.0.1:8888/docs` (alias `/routers/studio/docs/`, shown in the Studio top bar when built)
 - **WebGME Generic UI**: `http://127.0.0.1:8888/`
 
-### Deployment Modes (Dev vs. User-Facing Studio-Only)
+### Deployment Modes (Dev vs. Production / User-Facing)
 
-| Mode | Command / Env | `/` Route | WebGME Generic UI |
-| --- | --- | --- | --- |
-| **Dev (default)** | `npm start` / `npm run start:dev` | WebGME Generic UI (`/`) | Enabled (Studio at `/routers/studio`) |
-| **Dev Hybrid** | `RUSTY_ROOT_TO_STUDIO=true` | **Rusty Studio** | Enabled at `/index.html` |
-| **User-Facing** | `npm run start:prod` or `RUSTY_STUDIO_ONLY=true` | **Rusty Studio** | Disabled (`WebGME UI ↗` button hidden) |
+| Mode | Command / Env | Authentication | `/` Route | WebGME Generic UI |
+| --- | --- | --- | --- | --- |
+| **Dev (default)** | `npm start` / `npm run start:dev` | Guest unless `RUSTY_AUTH=true` (shows **Log out** when enabled) | WebGME Generic UI (`/`) | Enabled (Studio at `/routers/studio`) |
+| **Dev Hybrid** | `RUSTY_ROOT_TO_STUDIO=true` | Guest unless `RUSTY_AUTH=true` | **Rusty Studio** | Enabled at `/index.html` |
+| **Production** | `npm run start:prod` (`NODE_ENV=prod`) | **Required** (`/profile/login` + **Log out**) | **Rusty Studio** | Disabled (`WebGME UI ↗` hidden) |
 
 ### 3. Enable Full GitHub Sync (`webgme-git` OAuth + `/profile`)
 
@@ -94,7 +94,7 @@ npm start
 ```bash
 npm start          # Start WebGME + Rusty Studio (dev default: both UIs enabled)
 npm run start:dev  # Dev mode with guest access (unless RUSTY_AUTH=true)
-npm run start:prod # User-facing mode: serves Rusty Studio at /, disables generic UI
+npm run start:prod # Production mode: enforces OAuth login/logout, serves Studio at /, disables generic UI
 npm test           # Run unit, router, analyzer, codegen, and native Rust parity tests
 npm run sync:examples # Regenerate examples/ from src/common/rustContract.js
 npm run build:seed # Rebuild seed/RustySeed.webgmex from metamodel/Language.json

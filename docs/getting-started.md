@@ -38,15 +38,16 @@ Both **Rusty Studio** and the **WebGME Generic UI** are available side by side:
 | --- | --- |
 | `http://127.0.0.1:8888/routers/studio` | **Rusty Studio IDE** (Diagram + Monaco + Simulator) |
 | `http://127.0.0.1:8888/` | **WebGME Generic UI** (Meta-Editor, tree browser, plugins) |
-| `http://127.0.0.1:8888/routers/studio/docs/` | **Built Documentation & Tutorials** (this site) |
+| `http://127.0.0.1:8888/docs` | **Built Documentation & Tutorials** (this site, when `npm run docs:build` has been run; also served at `/routers/studio/docs/`) |
 
-### User-Facing / Studio-Only Mode (`npm run start:prod` or `RUSTY_STUDIO_ONLY=true`)
+### User-Facing / Production Mode (`npm run start:prod`)
 
-For end-user deployments where exposing WebGME's generic editor could confuse non-experts:
+For user-facing deployments where exposing WebGME's generic editor could confuse non-experts or guest access should not be allowed:
 
-- **`/` and `/index.html` serve Rusty Studio directly**, and the **WebGME Generic UI** is disabled.
-- The **`WebGME UI ↗`** header button in Rusty Studio automatically hides itself.
-- You can also combine flags (`RUSTY_SERVE_WEBGME_UI=true` + `RUSTY_ROOT_TO_STUDIO=true`) to make `/` open Rusty Studio while keeping WebGME reachable at `/index.html`.
+- **Authentication is required** (`allowGuests = false`, redirecting unauthenticated visitors to `/profile/login`), and Rusty Studio exposes a **`Profile ↗`** and **`Log out`** (`/logout`) button in the top bar.
+- **`/` and `/index.html` serve Rusty Studio directly**, and the **WebGME Generic UI** is disabled (hiding the **`WebGME UI ↗`** header button automatically).
+- Running **`npm run docs:build`** automatically enables `/docs` and shows the **`Docs ↗`** link in the top bar.
+- You can also mix modes in dev via environment variables (`RUSTY_STUDIO_ONLY=true`, `RUSTY_SERVE_WEBGME_UI=true`, `RUSTY_ROOT_TO_STUDIO=true`, `RUSTY_AUTH=true`).
 
 On first launch in guest/dev mode, Rusty Studio automatically creates a WebGME project called **`RustyDemo`** seeded from `seed/RustySeed.webgmex`.
 
