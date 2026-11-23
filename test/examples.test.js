@@ -11,6 +11,7 @@ const {
   resolveCrateFilePath,
 } = require("../src/common/rustContract");
 const { analyzeStateCode } = require("../src/common/rustAnalyzer");
+const { checkMachineDeterminism } = require("../src/common/rustGuardLang");
 const { createSimulation } = require("../src/common/rustSimEngine");
 
 const REPO_ROOT = path.resolve(__dirname, "..");
@@ -39,12 +40,15 @@ function runCargoTrace(crateDir, events) {
     .map((line) => JSON.parse(line));
 }
 
-describe("Tutorial Examples (BlinkyController & SmartThermostat)", () => {
-  it("passes RustyAnalyzer with 0 errors and 0 warnings across all BlinkyController & SmartThermostat states", () => {
+describe("Tutorial Examples (V3 Pure Model-Driven Blinky & SmartThermostat)", () => {
+  it("passes RustyAnalyzer and formal mutual-exclusivity checks with 0 errors across all states", () => {
     for (const model of [getStarterBlinkyModel(), getSmartThermostatModel()]) {
       assert.equal(model.gitOwner, "");
       assert.equal(model.gitRepo, "rusty");
       assert.equal(model.gitBranch, "dev");
+
+      const det = checkMachineDeterminism(model);
+      assert.equal(det.ok, true, `${model.name} determinism check failed: ${JSON.stringify(det.overlaps)}`);
 
       const cargoPath = resolveCrateFilePath(model, "Cargo.toml");
       assert.match(cargoPath, /^examples\/[a-z-]+\/Cargo\.toml$/);
@@ -69,19 +73,25 @@ describe("Tutorial Examples (BlinkyController & SmartThermostat)", () => {
     }
   });
 
-  it("simulates SmartThermostat thermal physics, Eco mode, Cooling, OverheatAlert emit->Cooldown, and SafeLockout->Reset", () => {
+  it("simulates SmartThermostat pure Entry/Exit + guarded/self transitions cleanly", () => {
     const model = getSmartThermostatModel();
     const sim = createSimulation(model);
 
-    // 1. Starts in Standby at 21.0 C, ambient 15.0 C -> passive drift 20.25 -> enters Heating
+    // 1. Starts in Standby at 21.0 C inside deadband -> Tick 1 drifts passively to 20.25 C
     assert.equal(sim.getSnapshot().currentState, "Standby");
     sim.dispatch("Tick");
     let snap = sim.getSnapshot();
-    assert.equal(snap.currentState, "Heating");
+    assert.equal(snap.currentState, "Standby");
     assert.equal(snap.globals.current_temp_c, 20.25);
-    assert.equal(snap.globals.status_note, "Heating");
 
-    // 2. Heating ticks accumulate energy_wh and return to Standby when >= target(22) + hysteresis(1) = 23.0
+    // 2. Tick 2 sees 20.25 < 21.0 -> enters Heating (`on_enter` sets status_note="Heating")
+    sim.dispatch("Tick");
+    snap = sim.getSnapshot();
+    assert.equal(snap.currentState, "Heating");
+    assert.equal(snap.globals.status_note, "Heating");
+    assert.equal(snap.globals.cycle_ticks, 0);
+
+    // 3. Heating ticks run heat_step self-transition, then return to Standby once >= 23.0 C
     sim.dispatch("Tick");
     snap = sim.getSnapshot();
     assert.equal(snap.globals.energy_wh, 25);
@@ -92,52 +102,59 @@ describe("Tutorial Examples (BlinkyController & SmartThermostat)", () => {
     snap = sim.getSnapshot();
     assert.equal(snap.globals.energy_wh, 50);
     assert.equal(snap.globals.current_temp_c, 22.3);
-    assert.equal(snap.currentState, "Heating");
 
     sim.dispatch("Tick");
     snap = sim.getSnapshot();
     assert.equal(snap.globals.energy_wh, 75);
     assert.equal(snap.globals.current_temp_c, 23.14);
+
+    sim.dispatch("Tick");
+    snap = sim.getSnapshot();
     assert.equal(snap.currentState, "Standby");
 
-    // 3. ToggleEco widens hysteresis_c to 1.5
+    // 4. ToggleEco + SetAmbient(36) + SetTarget(20) -> Standby -> Cooling
     sim.dispatch("ToggleEco");
     assert.equal(sim.getSnapshot().globals.eco_mode, true);
     assert.equal(sim.getSnapshot().globals.hysteresis_c, 1.5);
 
-    // 4. Warm outside ambient (36 C) + low target (20 C) drives Standby -> Cooling
     sim.dispatch("SetAmbient", 36);
     sim.dispatch("SetTarget", 20);
     sim.dispatch("Tick");
     assert.equal(sim.getSnapshot().currentState, "Cooling");
 
-    // 5. Over-cycling (max_cycle_ticks) triggers self-emitted OverheatAlert -> Cooldown -> 3 ticks -> Standby
+    // 5. Over-cycling (max_cycle_ticks=2) -> overheat guard transitions directly to Cooldown -> Standby
     sim.setGlobal("max_cycle_ticks", 2);
     sim.dispatch("Tick"); // cycle_ticks = 1
     assert.equal(sim.getSnapshot().currentState, "Cooling");
-    sim.dispatch("Tick"); // cycle_ticks = 2 >= max_cycle_ticks -> Outcome::Emit(OverheatAlert) -> Cooldown
+    sim.dispatch("Tick"); // cycle_ticks = 2
+    assert.equal(sim.getSnapshot().currentState, "Cooling");
+    sim.dispatch("Tick"); // cycle_ticks >= max_cycle_ticks -> Cooldown!
     snap = sim.getSnapshot();
     assert.equal(snap.currentState, "Cooldown");
     assert.equal(snap.globals.fault_code, 202);
     assert.equal(snap.globals.cycle_ticks, 3);
     assert.equal(snap.globals.status_note, "Safety Cooldown");
 
-    // 3 ticks in Cooldown -> returns to Standby and clears fault_code
+    // 3 ticks count down 3->2->1->0, 4th tick recovers to Standby
+    sim.dispatch("Tick");
+    sim.dispatch("Tick");
     sim.dispatch("Tick");
     assert.equal(sim.getSnapshot().currentState, "Cooldown");
-    sim.dispatch("Tick");
-    assert.equal(sim.getSnapshot().currentState, "Cooldown");
+    assert.equal(sim.getSnapshot().globals.cycle_ticks, 0);
     sim.dispatch("Tick");
     snap = sim.getSnapshot();
     assert.equal(snap.currentState, "Standby");
     assert.equal(snap.globals.fault_code, 0);
 
-    // 6. EmergencyShutoff -> SafeLockout -> Reset -> Standby
+    // 6. EmergencyShutoff -> SafeLockout (ignores SetTarget because no SetTarget transition in SafeLockout!) -> Reset
     sim.dispatch("EmergencyShutoff");
     snap = sim.getSnapshot();
     assert.equal(snap.currentState, "SafeLockout");
     assert.equal(snap.globals.fault_code, 999);
     assert.equal(snap.globals.status_note, "LOCKED OUT - Reset required");
+
+    sim.dispatch("SetTarget", 12);
+    assert.equal(sim.getSnapshot().globals.target_temp_c, 20); // unchanged in SafeLockout!
 
     sim.dispatch("Reset");
     snap = sim.getSnapshot();
@@ -184,7 +201,6 @@ describe("Tutorial Examples (BlinkyController & SmartThermostat)", () => {
     });
     assert.match(testOut, /test result: ok/);
 
-    // Ensure zero compiler warnings on check
     const checkRes = spawnSync("cargo", ["check", "--offline"], {
       cwd: thermoDir,
       encoding: "utf8",
@@ -192,29 +208,24 @@ describe("Tutorial Examples (BlinkyController & SmartThermostat)", () => {
     assert.equal(checkRes.status, 0, checkRes.stderr);
     assert.equal(checkRes.stderr.includes("warning:"), false, checkRes.stderr);
 
-    // Exercise Heating, SetTarget, ToggleEco, SetAmbient, Cooling, OverheatAlert->Cooldown, EmergencyShutoff->SafeLockout->Reset
     const events = [
-      "Tick",          // Standby -> Heating (20.25 C)
+      "Tick",          // Standby drift -> 20.25
+      "Tick",          // Standby -> Heating
       "Tick",          // Heating step 1
       "SetTarget:26",  // Raise target while heating
       "ToggleEco",     // Enable eco mode
-      "Tick",          // Heating step 2 in eco mode
-      "Tick",          // Heating step 3
-      "Tick",          // Heating step 4
-      "Tick",          // Heating step 5
-      "Tick",          // Heating step 6
-      "Tick",          // Heating step 7
-      "Tick",          // Heating step 8
-      "Tick",          // Heating step 9
-      "Tick",          // Heating step 10 -> max_cycle_ticks -> Outcome::Emit(OverheatAlert) -> Cooldown!
+      "Tick", "Tick", "Tick", "Tick", "Tick", "Tick", "Tick", "Tick", "Tick",
+      "Tick",          // cycle_ticks == 10 >= max_cycle_ticks -> Cooldown!
       "Tick",          // Cooldown 3 -> 2
       "Tick",          // Cooldown 2 -> 1
-      "Tick",          // Cooldown 1 -> Standby
-      "SetAmbient:38", // Hot outside
-      "SetTarget:18",  // Low target
-      "Tick",          // Standby drifts up -> Cooling
+      "Tick",          // Cooldown 1 -> 0
+      "Tick",          // cycle_ticks == 0 -> Standby!
+      "SetAmbient:38",
+      "SetTarget:18",
+      "Tick",          // Standby -> Cooling
       "Tick",          // Cooling step 1
       "EmergencyShutoff",
+      "SetTarget:12",  // Ignored in SafeLockout
       "Reset",
     ];
 

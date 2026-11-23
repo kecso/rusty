@@ -1,36 +1,34 @@
-# Demo Showcase: BlinkyController
+# Showcase: `BlinkyController` Quickstart
 
-**`BlinkyController`** (`examples/blinky/`) is a pre-seeded "hello world" hardware state machine included in `RustyDemo`. While the [Counter Tutorial](./00-build-a-counter.md) teaches you how to build a machine from scratch, this showcase lets you immediately explore a multi-state blink loop, thermal fault protection, and native Rust verification.
+**`BlinkyController`** (`examples/blinky/`) is a pre-seeded "hello world" hardware state machine included in `RustyDemo`. While the [Counter Tutorial](./00-build-a-counter.md) teaches you how to build a machine from scratch, this showcase lets you immediately explore pure `Entry` / `Exit` hooks, mutually exclusive temperature & blink-count guards, compact event badges, and native Rust verification.
 
 ![BlinkyController fixed layout, event badges, simulation, and native Rust parity](/images/demo-overview-blinky.gif)
 
-## 1. Open `BlinkyController` in Rusty Studio
+## 1. Tour the Workspace
 
-Start the server (`npm start` from your cloned fork) and open `http://127.0.0.1:8888/routers/studio`.
+1. Start Rusty Studio (`npm start`) and open `http://127.0.0.1:8888/routers/studio`.
+2. Ensure **`BlinkyController`** is selected in the **Machine** dropdown.
+3. Try the visual enhancements:
+   - **Collapsible Side Lists**: Click `▾ States`, `▾ Globals`, or `▾ Events` to focus, or click **`◧` / `◨`** to hide either side panel completely.
+   - **Compact Event Badges**: Click **`🏷 Badges`** to switch between compact letter badges (`A`..`E`) with distinct stroke patterns and full transition labels. Hover any connector badge for a rich Event + `[Guard]` + `tr_*` tooltip.
+   - **Fixed Layered Layout**: Toggle **`⇄ LR`** / **`⇄ TB`** in the diagram toolbar.
 
-On first boot, Studio seeds **`RustyDemo`** from `RustySeed.webgmex` and opens **`BlinkyController`**. On the **Diagram** canvas, you'll see a clean fixed layered layout with four states:
+## 2. Inspect Pure Model-Driven Hooks & Guards
 
-- **`Idle`** (`INIT`) — ensures `globals.led_high = false`
-- **`LedOn`** — drives `led_high = true`, increments `blink_count` and `temperature_c`
-- **`LedOff`** — drives `led_high = false`, cools down slightly, returns to `Idle` at `max_blinks`
-- **`Fault`** — safe latched state until `Reset`
+- **States (`Entry` / `Exit` / `Transitions` tabs)**: Click **`LedOn`**. On the **`Entry`** tab, `src/states/led_on.rs` shows only `on_enter` and `on_exit`—with zero `StateId` or `Event` boilerplate:
+  ```rust
+  globals.led_high = true;
+  globals.blink_count += 1;
+  globals.temperature_c += 2;
+  ```
+- **Transitions (`Guard & Exclusivity` / `Action Hook` tabs)**: Click **`LedOn → Fault` (`Tick`)** to see its guard `temperature_c >= 75` proven mutually exclusive with **`LedOn → LedOff` (`Tick`)** (`temperature_c < 75`). No ambiguous ordering rules are needed.
 
-Notice how transitions use compact letter badges (`A`, `B`, `C`, `D`, `E`) with distinct colors and dash styles matched to the **Events** legend on the left—hover any connector to inspect its full event and guard expression (`[globals.temperature_c >= 75]`) in a floating tooltip, or toggle **`⇄ LR` / `⇄ TB`** to flip layout direction.
+## 3. Run Simulator & Verify Native Rust Parity
 
-## 2. Inspect State Code & Machine-Level Git Location
-
-1. Click **`LedOn`** on the diagram or in the collapsible **States** sidebar.
-2. In the right **Inspector & Rust** pane, see its inherited **Git File Location** (`examples/blinky/src/states/led_on.rs`, derived automatically from the machine's `examples/blinky` directory) alongside its tracked `dependsOn` references and live `< 1 ms` Monaco diagnostics.
-
-## 3. Run the Simulator & Trigger a Fault
-
-1. Switch the right pane tab to **Simulator**.
-2. Click **`Start`** under **Dispatch Event**—**`LedOn`** glows green on the diagram and `blink_count` becomes `1`.
-3. Click **`⏭ Step Tick`** repeatedly (or override `temperature_c` to `80` in **Live Globals** and step **`Tick`** to trigger **`Fault`**).
-4. Click **`Reset`** to return cleanly to **`Idle`**.
-
-## 4. Verify Behavior in Native Rust
-
-Click **`⚙ Verify in Native Rust`** above the **Execution Trace**. Rusty generates the standalone crate, compiles it with `cargo`, replays your exact event sequence, and confirms the native Rust binary produces identical final state and globals.
+1. Switch the right pane to the **`Simulator`** tab.
+2. Click **`Start`** in **Dispatch Event** — transitions `Idle -> LedOn` (runs `Idle -> LedOn` `tr_start` action `globals.blink_count = 0;` followed by `LedOn::on_enter`, setting `led_high = true`, `blink_count = 1`, `temperature_c = 30`).
+3. Click **`▶ Auto-Tick`** (or **`⏭ Step Tick`**) to watch pulses alternate between **`LedOn`** and **`LedOff`** until `blink_count >= max_blinks` transitions **`LedOff → Idle`**.
+4. In **Live Globals**, click `temperature_c`'s value and set it to **`75`**, dispatch **`Start`**, then **`⏭ Step Tick`** — the mutually exclusive overheat guard transitions `LedOn -> Fault`.
+5. Click **`⚙ Verify in Native Rust`** under **Execution Trace** — Rusty generates the Cargo crate, runs `cargo run`, and confirms every state and `Globals` field matches the browser simulator identically.
 
 Next: inspect the [SmartThermostat Showcase](./02-smart-thermostat.md) or follow the hands-on [Counter Tutorial](./00-build-a-counter.md).

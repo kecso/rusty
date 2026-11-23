@@ -1,4 +1,4 @@
-//! State modules synchronized via webgme-git.
+//! State hook modules synchronized via webgme-git.
 
 pub mod idle;
 pub mod led_on;

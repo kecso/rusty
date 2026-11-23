@@ -1,108 +1,106 @@
-# Tutorial 1: Build a Simple Counter From Scratch
+# Tutorial 1: Build a Counter Machine from Scratch
 
-Instead of only touring pre-built demos, this guide walks you through designing a small, real state machine—**`SimpleCounter`**—from an empty machine all the way to GitHub commits and a standalone Cargo crate.
+Instead of touring pre-built demos right away, this hands-on walkthrough builds a brand-new **`Counter`** state machine from scratch: connecting your own **GitHub fork**, creating **States**, **GlobalVars** (with numeric domain bounds), **EventDefs**, formally **mutually exclusive Transitions**, pure **`Entry`/`Exit` & `Action Hook` code** in contextual read-only Monaco, and running **Simulator + Native `cargo` verification**.
 
-`SimpleCounter` counts steps until it reaches a configurable threshold:
+## 1. Fork the Repository & Start Rusty Studio
 
+1. Fork [`https://github.com/kecso/rusty`](https://github.com/kecso/rusty) to your own GitHub account (`https://github.com/<your-username>/rusty`).
+2. Clone **your fork**, create your personal `dev` sandbox branch, and launch the server:
+
+```bash
+git clone https://github.com/<your-username>/rusty.git
+cd rusty
+git checkout -b dev
+git push -u origin dev
+
+npm install
+npm start
 ```
-  [Ready] ──(Start)──▶ [Counting] ──(Increment [count >= limit])──▶ [LimitReached]
-     ▲                                                                      │
-     └───────────────────────────────(Reset)────────────────────────────────┘
-```
 
-## 1. Fork, Start & Sign In via GitHub
+3. Open **`http://127.0.0.1:8888/routers/studio`** in Chrome.
+4. *(Optional for live Git commits)* Configure your GitHub App `.env` (see [GitHub Sync & Import](./04-github-sync-dev.md)), sign in via **User Profile** (`/profile`), and verify **`GitHub: @<your-username>`** turns green. Without GitHub login, everything works immediately in **Local Draft Mode**.
 
-1. Fork [`https://github.com/kecso/rusty`](https://github.com/kecso/rusty) to `<your-username>/rusty`, clone your fork, and create a `dev` sandbox branch:
-   ```bash
-   git clone https://github.com/<your-username>/rusty.git
-   cd rusty
-   git checkout -b dev && git push -u origin dev
-   npm install && npm start
-   ```
-   *(If you just want to try local drafts first without GitHub sync, skip OAuth setup and run `npm start` directly.)*
-2. To sync files with GitHub, visit `http://127.0.0.1:8888/profile/login`, sign in with GitHub, and grant repository access to `<your-username>/rusty`.
-3. Open **`http://127.0.0.1:8888/routers/studio`**.
+## 2. Create the Machine & Point It to Your Repo Directory
 
-## 2. Create the Machine & Point to Your GitHub Directory
-
-1. In the top bar next to **Machine**, click **`+ Machine`**, name it **`SimpleCounter`**, and click **Create Machine**.
-2. Click **`Connect Git Repository…`** in the Git Repository bar (this is a one-time connection for the machine):
+1. Click **`+ Machine`** in the top bar:
+   - **Name**: `Counter`
+   - **Rust Crate Name**: `counter`
+2. *(When signed in with GitHub)* Click **`Connect Git Repository…`** in the Git Repository bar:
    - **Owner**: `<your-username>`
    - **Repo**: `rusty`
    - **Branch**: `dev`
-   - **Machine Directory**: `examples/simple-counter`
-   - Leave **Connect current design** selected.
-3. Click **Connect Repository**.
-   - Every state you create under `SimpleCounter` now automatically maps to `examples/simple-counter/src/states/<state_name>.rs`—no per-state Git configuration needed.
+   - **Machine Directory**: `examples/counter-demo`
+   - Leave **Connect current design** selected and click **Connect Repository**.
 
-## 3. Add Shared Data, Events, and States
+From this point on, every state in `Counter` automatically maps to `examples/counter-demo/src/states/<state>.rs` inside your fork's `dev` branch.
 
-Use the collapsible **Explorer** lists on the left side of Studio:
+## 3. Add States, Bounded Globals, and Events
 
-1. **Add Globals** (`+ Var` under **Globals**):
-   - `count` (`u32`, initial value `0`)
-   - `limit` (`u32`, initial value `3`)
-2. **Add Events** (`+ Event` under **Events**):
-   - `Start` (unit event — leave payload empty)
-   - `Increment` (unit event)
-   - `Reset` (unit event)
-   Notice each event automatically receives a letter badge (`A`, `B`, `C`) and distinct line style in the legend so diagrams stay readable even with many transitions.
-3. **Add States** (`+ State` under **States**):
-   - `Ready` (check **Initial State** in the right inspector and click **Save Design**)
-   - `Counting`
-   - `LimitReached`
+All three explorer lists on the left (`States`, `Globals`, `Events`) can be collapsed anytime with **`▾`** (or the entire side panes toggled with **`◧`** / **`◨`**).
 
-Look at the center **Diagram** canvas: Rusty arranges your states cleanly in a deterministic **fixed layered layout** (`⇄ LR` or `⇄ TB`). You can hide either side panel (`◧` / `◨`) or collapse individual explorer lists at any time to focus on the diagram.
+1. **Create 3 States** using **`+ State`**:
+   - **`Ready`** — check **Initial State**
+   - **`Counting`**
+   - **`LimitReached`**
+2. **Create 2 Bounded GlobalVars** using **`+ Var`**:
+   - `count` — type `u32`, initial `0`, **Min** `0`
+   - `limit` — type `u32`, initial `5`, **Min** `1`
+3. **Create 3 EventDefs** using **`+ Event`**:
+   - `Start` *(no payload)*
+   - `Increment` *(no payload)*
+   - `Reset` *(no payload)*
 
-## 4. Wire Transitions & Guards
+## 4. Wire Deterministic Model-Driven Transitions
 
-1. Click **`⇢ Edge`** in the diagram toolbar.
-2. Click **`Ready`**, then click **`Counting`** → choose trigger event **`Start`** → click **Create Transition**.
-3. Click **`⇢ Edge`**, connect **`Counting` → `Counting`**, choose **`Increment`** (optional guard: `globals.count + 1 < globals.limit`).
-4. Click **`⇢ Edge`**, connect **`Counting` → `LimitReached`**, choose **`Increment`**, and set **Guard Expression**:
+1. Click **`⇢ Edge`** in the Diagram toolbar to enter connect mode.
+2. Click **`Ready`**, then **`Counting`** → set Short Name `start`, Trigger Event `Start`, leave **Guard** empty → **Save**.
+3. Click **`Counting`**, then **`Counting`** again (self-loop, `reenter` unchecked = internal reaction without firing Exit/Entry):
+   - Short Name: `step`
+   - Trigger Event: `Increment`
+   - Guard: `count + 1 < limit`
+4. Click **`Counting`**, then **`LimitReached`**:
+   - Short Name: `reached`
+   - Trigger Event: `Increment`
+   - Guard: `count + 1 >= limit`
+5. Click **`LimitReached`**, then **`Ready`**:
+   - Short Name: `reset`
+   - Trigger Event: `Reset`
+
+Hover any compact event badge (`A`, `B`, `C`) on the diagram to inspect its event name, `[guard]`, and squashed hook function tooltip.
+
+## 5. Prove Guard Exclusivity & Add Contextual Hook Code
+
+All control flow (`Ready -> Counting -> LimitReached`) is already generated by the model—you never import `StateId` or `Event` in state files.
+
+1. Click **`Ready`** on the diagram:
+   - Select the **`Entry`** tab (`on_enter`).
+   - Notice Monaco renders the full `src/states/ready.rs` file with headers and signatures **dimmed and strictly read-only**.
+   - Inside the highlighted editable body of `on_enter`, type:
+     ```rust
+     globals.count = 0;
+     ```
+   - Press **`⌘S` / `Ctrl+S`** (or click **Save Hook (⌘S)** / **↑ Save & Push (⌘S)**).
+2. Click the **`Counting ↺ Counting` (`Increment`)** edge:
+   - Look at the **`Guard & Exclusivity`** tab: Studio shows **`✓ Proven Mutually Exclusive`** between `count + 1 < limit` and sibling `count + 1 >= limit`.
+   - Try temporarily changing the guard to `count < limit`: the prover immediately flags **`✕ Non-Deterministic Guard Overlap!`** with an exact integer `(count, limit)` counterexample. Restore `count + 1 < limit` and save.
+   - Switch to the **`Action Hook`** tab: Monaco opens `src/states/counting.rs` scrolled directly to squashed **`pub fn tr_step(globals: &mut Globals)`** (with `on_enter` and `on_exit` read-only above it). Add:
+     ```rust
+     globals.count += 1;
+     ```
+     and save.
+3. Click **`Counting → LimitReached` (`Increment`)** → **`Action Hook`** tab → inside `tr_reached`, add:
    ```rust
-   globals.count + 1 >= globals.limit
+   globals.count += 1;
    ```
-5. Click **`⇢ Edge`**, connect **`LimitReached` → `Ready`**, choose **`Reset`**.
-6. Hover over the badge on the `Counting → LimitReached` connector to see the full tooltip (`Increment`, `[globals.count + 1 >= globals.limit]`)—notice the flag symbol **`⚑`** tells you a guard is active without cluttering the diagram.
+   and save.
 
-## 5. Author State Code with Continuous Checks
+## 6. Simulate & Verify Native `rustc` Parity
 
-Select **`Counting`** and write its handler in the embedded Monaco editor:
+1. Switch the right pane to **`Simulator`**.
+2. Click **`Start`** → `Counter` enters **`Counting`**.
+3. Click **`Increment`** 5 times:
+   - Steps 1–4 fire `tr_step` (`count = 1..4`) cleanly while remaining in `Counting` (notice `Counting::on_enter` does not re-fire).
+   - Step 5 reaches `count + 1 >= limit` (`5 >= 5`), runs `tr_reached`, and enters **`LimitReached`**.
+4. Click **`✓ Verify with rustc`** (top bar) and **`⚙ Verify in Native Rust`** (Simulator) to confirm `cargo check` and native `cargo run` produce identical state transitions and globals.
 
-```rust
-use crate::types::{Event, Globals, Outcome, StateId};
-
-pub fn on_enter(globals: &mut Globals) {
-    globals.count = 0;
-}
-
-pub fn on_event(globals: &mut Globals, event: &Event) -> Outcome {
-    match event {
-        Event::Increment => {
-            globals.count += 1;
-            if globals.count >= globals.limit {
-                Outcome::Transition(StateId::LimitReached)
-            } else {
-                Outcome::Stay
-            }
-        }
-        _ => Outcome::Stay,
-    }
-}
-
-pub fn on_exit(_globals: &mut Globals) {}
-```
-
-Notice two things right away:
-- **Edit-Time Checks**: Try mistyping `globals.limit` as `globals.limt`—Monaco underlines it in `< 1 ms`. Fix it and notice the **Design Dependencies (`dependsOn` Set)** chips automatically track `var: count`, `var: limit`, `ev: Increment`, and `state: LimitReached` when you save.
-- **Design Impact Detection**: Try clicking the edit icon (`✎`) on `limit` in **Globals** and renaming it to `max_count`. Immediately, an **Impact Banner** lights up at the top of the studio flagging both `Counting` and your guarded transition so no silent mismatch can slip through! Rename it back to `limit` (or update the code & guard and save) to clear the warning.
-- Press **`⌘S` / `Ctrl+S`** (or click **`↑ Save & Push`**) to commit `examples/simple-counter/src/states/counting.rs` straight to your fork's `dev` branch.
-
-## 6. Test, Verify Natively & Export Your Standalone Crate
-
-1. Switch the right pane to **Simulator** and dispatch **`Start`**, then **`Increment`** three times—watch `Counting` transition cleanly to `LimitReached` when `count` hits `3`.
-2. Click **`⚙ Verify in Native Rust`** to compile and run the exact same sequence via `cargo`, confirming 100% behavioral parity.
-3. Open the **Crate** tab in the center pane to inspect generated `Cargo.toml`, `src/types.rs`, and `src/machine.rs`—or click **`Push Full Crate`** to commit a completely self-contained Rust crate to GitHub that compiles and runs anywhere with zero dependency on Rusty Studio.
-
-Next: explore [Edit-Time & Impact Checks](./03-edit-time-checks.md) or tour the pre-built [SmartThermostat Showcase](./02-smart-thermostat.md).
+Next: explore [Edit-Time & Exclusivity Checks](./03-edit-time-checks.md) or tour the pre-built [SmartThermostat Showcase](./02-smart-thermostat.md).

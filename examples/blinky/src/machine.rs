@@ -1,7 +1,24 @@
-//! Generated state machine dispatcher for BlinkyController.
+//! Generated model-driven state machine dispatcher for BlinkyController.
+//! All topology, event dispatch, and mutual-exclusivity checks live here.
 
 use crate::states;
-use crate::types::{Event, Globals, Outcome, StateId};
+use crate::types::{Event, Globals, StateId};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum TransitionId {
+    T0IdleFaultDetected,
+    T1LedOffFaultDetected,
+    T2LedOnFaultDetected,
+    T3FaultReset,
+    T4IdleStart,
+    T5LedOffStop,
+    T6LedOnStop,
+    T7LedOffTick,
+    T8LedOffTick,
+    T9LedOnTick,
+    T10LedOnTick,
+}
 
 pub struct StateMachine {
     pub current: StateId,
@@ -38,83 +55,145 @@ impl StateMachine {
         }
     }
 
-    fn evaluate_model_transitions(&self, event: &Event) -> Option<StateId> {
+    pub fn select_transition(&self, event: &Event) -> Option<TransitionId> {
         let globals = &self.globals;
-        let _ = (globals, event);
-        if self.current == StateId::LedOn && matches!(event, Event::Tick) && (globals.temperature_c >= 75) {
-            return Some(StateId::Fault);
+        let _ = globals;
+        let mut matched: Option<TransitionId> = None;
+        match (self.current, event) {
+            (StateId::Idle, Event::FaultDetected) => {
+                // @rusty:tr {"id":"T0IdleFaultDetected","src":"Idle","dst":"Fault","event":"FaultDetected","name":"fault","reenter":false,"fn":"tr_fault","guard":""}
+                debug_assert!(matched.is_none(), "Non-deterministic guard overlap in Idle on FaultDetected");
+                matched = Some(TransitionId::T0IdleFaultDetected);
+            }
+            (StateId::LedOff, Event::FaultDetected) => {
+                // @rusty:tr {"id":"T1LedOffFaultDetected","src":"LedOff","dst":"Fault","event":"FaultDetected","name":"fault","reenter":false,"fn":"tr_fault","guard":""}
+                debug_assert!(matched.is_none(), "Non-deterministic guard overlap in LedOff on FaultDetected");
+                matched = Some(TransitionId::T1LedOffFaultDetected);
+            }
+            (StateId::LedOn, Event::FaultDetected) => {
+                // @rusty:tr {"id":"T2LedOnFaultDetected","src":"LedOn","dst":"Fault","event":"FaultDetected","name":"fault","reenter":false,"fn":"tr_fault","guard":""}
+                debug_assert!(matched.is_none(), "Non-deterministic guard overlap in LedOn on FaultDetected");
+                matched = Some(TransitionId::T2LedOnFaultDetected);
+            }
+            (StateId::Fault, Event::Reset) => {
+                // @rusty:tr {"id":"T3FaultReset","src":"Fault","dst":"Idle","event":"Reset","name":"reset","reenter":false,"fn":"tr_reset","guard":""}
+                debug_assert!(matched.is_none(), "Non-deterministic guard overlap in Fault on Reset");
+                matched = Some(TransitionId::T3FaultReset);
+            }
+            (StateId::Idle, Event::Start) => {
+                // @rusty:tr {"id":"T4IdleStart","src":"Idle","dst":"LedOn","event":"Start","name":"start","reenter":false,"fn":"tr_start","guard":""}
+                debug_assert!(matched.is_none(), "Non-deterministic guard overlap in Idle on Start");
+                matched = Some(TransitionId::T4IdleStart);
+            }
+            (StateId::LedOff, Event::Stop) => {
+                // @rusty:tr {"id":"T5LedOffStop","src":"LedOff","dst":"Idle","event":"Stop","name":"stop","reenter":false,"fn":"tr_stop","guard":""}
+                debug_assert!(matched.is_none(), "Non-deterministic guard overlap in LedOff on Stop");
+                matched = Some(TransitionId::T5LedOffStop);
+            }
+            (StateId::LedOn, Event::Stop) => {
+                // @rusty:tr {"id":"T6LedOnStop","src":"LedOn","dst":"Idle","event":"Stop","name":"stop","reenter":false,"fn":"tr_stop","guard":""}
+                debug_assert!(matched.is_none(), "Non-deterministic guard overlap in LedOn on Stop");
+                matched = Some(TransitionId::T6LedOnStop);
+            }
+            (StateId::LedOff, Event::Tick) => {
+                // @rusty:tr {"id":"T7LedOffTick","src":"LedOff","dst":"Idle","event":"Tick","name":"done","reenter":false,"fn":"tr_done","guard":"blink_count >= max_blinks"}
+                if globals.blink_count >= globals.max_blinks {
+                    debug_assert!(matched.is_none(), "Non-deterministic guard overlap in LedOff on Tick");
+                    matched = Some(TransitionId::T7LedOffTick);
+                }
+                // @rusty:tr {"id":"T8LedOffTick","src":"LedOff","dst":"LedOn","event":"Tick","name":"next_pulse","reenter":false,"fn":"tr_next_pulse","guard":"blink_count < max_blinks"}
+                if globals.blink_count < globals.max_blinks {
+                    debug_assert!(matched.is_none(), "Non-deterministic guard overlap in LedOff on Tick");
+                    matched = Some(TransitionId::T8LedOffTick);
+                }
+            }
+            (StateId::LedOn, Event::Tick) => {
+                // @rusty:tr {"id":"T9LedOnTick","src":"LedOn","dst":"Fault","event":"Tick","name":"overheat","reenter":false,"fn":"tr_overheat","guard":"temperature_c >= 75"}
+                if globals.temperature_c >= 75 {
+                    debug_assert!(matched.is_none(), "Non-deterministic guard overlap in LedOn on Tick");
+                    matched = Some(TransitionId::T9LedOnTick);
+                }
+                // @rusty:tr {"id":"T10LedOnTick","src":"LedOn","dst":"LedOff","event":"Tick","name":"pulse_off","reenter":false,"fn":"tr_pulse_off","guard":"temperature_c < 75"}
+                if globals.temperature_c < 75 {
+                    debug_assert!(matched.is_none(), "Non-deterministic guard overlap in LedOn on Tick");
+                    matched = Some(TransitionId::T10LedOnTick);
+                }
+            }
+            _ => {}
         }
-        if self.current == StateId::LedOff && matches!(event, Event::Tick) && (globals.blink_count >= globals.max_blinks) {
-            return Some(StateId::Idle);
+        matched
+    }
+
+    fn execute_transition(&mut self, tid: TransitionId, event: &Event) {
+        let _ = event;
+        match tid {
+            TransitionId::T0IdleFaultDetected => {
+                self.exit_current();
+                self.current = StateId::Fault;
+                self.enter_current();
+            }
+            TransitionId::T1LedOffFaultDetected => {
+                self.exit_current();
+                self.current = StateId::Fault;
+                self.enter_current();
+            }
+            TransitionId::T2LedOnFaultDetected => {
+                self.exit_current();
+                self.current = StateId::Fault;
+                self.enter_current();
+            }
+            TransitionId::T3FaultReset => {
+                self.exit_current();
+                states::fault::tr_reset(&mut self.globals);
+                self.current = StateId::Idle;
+                self.enter_current();
+            }
+            TransitionId::T4IdleStart => {
+                self.exit_current();
+                states::idle::tr_start(&mut self.globals);
+                self.current = StateId::LedOn;
+                self.enter_current();
+            }
+            TransitionId::T5LedOffStop => {
+                self.exit_current();
+                self.current = StateId::Idle;
+                self.enter_current();
+            }
+            TransitionId::T6LedOnStop => {
+                self.exit_current();
+                self.current = StateId::Idle;
+                self.enter_current();
+            }
+            TransitionId::T7LedOffTick => {
+                self.exit_current();
+                self.current = StateId::Idle;
+                self.enter_current();
+            }
+            TransitionId::T8LedOffTick => {
+                self.exit_current();
+                self.current = StateId::LedOn;
+                self.enter_current();
+            }
+            TransitionId::T9LedOnTick => {
+                self.exit_current();
+                self.current = StateId::Fault;
+                self.enter_current();
+            }
+            TransitionId::T10LedOnTick => {
+                self.exit_current();
+                self.current = StateId::LedOff;
+                self.enter_current();
+            }
         }
-        if self.current == StateId::Idle && matches!(event, Event::FaultDetected) {
-            return Some(StateId::Fault);
-        }
-        if self.current == StateId::LedOn && matches!(event, Event::FaultDetected) {
-            return Some(StateId::Fault);
-        }
-        if self.current == StateId::LedOff && matches!(event, Event::FaultDetected) {
-            return Some(StateId::Fault);
-        }
-        if self.current == StateId::Idle && matches!(event, Event::Start) {
-            return Some(StateId::LedOn);
-        }
-        if self.current == StateId::LedOn && matches!(event, Event::Tick) && (globals.temperature_c < 75) {
-            return Some(StateId::LedOff);
-        }
-        if self.current == StateId::LedOff && matches!(event, Event::Tick) && (globals.blink_count < globals.max_blinks) {
-            return Some(StateId::LedOn);
-        }
-        if self.current == StateId::Fault && matches!(event, Event::Reset) {
-            return Some(StateId::Idle);
-        }
-        if self.current == StateId::LedOn && matches!(event, Event::Stop) {
-            return Some(StateId::Idle);
-        }
-        if self.current == StateId::LedOff && matches!(event, Event::Stop) {
-            return Some(StateId::Idle);
-        }
-        None
     }
 
     pub fn dispatch(&mut self, event: &Event) -> (StateId, StateId) {
-        let initial_from = self.current;
-        let mut pending: Option<Event> = Some(event.clone());
-        let mut depth = 0u8;
-
-        while let Some(current_ev) = pending.take() {
-            if depth >= 8 {
-                break;
-            }
-            depth += 1;
-
-            let outcome = match self.current {
-            StateId::Idle => states::idle::on_event(&mut self.globals, &current_ev),
-            StateId::LedOn => states::led_on::on_event(&mut self.globals, &current_ev),
-            StateId::LedOff => states::led_off::on_event(&mut self.globals, &current_ev),
-            StateId::Fault => states::fault::on_event(&mut self.globals, &current_ev),
-            };
-
-            let next_state = match outcome {
-                Outcome::Transition(target) => Some(target),
-                Outcome::Emit(emitted) => {
-                    pending = Some(emitted);
-                    None
-                }
-                Outcome::Stay => self.evaluate_model_transitions(&current_ev),
-            };
-
-            if let Some(target) = next_state {
-                if target != self.current {
-                    self.exit_current();
-                    self.current = target;
-                    self.enter_current();
-                }
-            }
+        let from = self.current;
+        if let Some(tid) = self.select_transition(event) {
+            self.execute_transition(tid, event);
         }
-
         self.step_count += 1;
-        (initial_from, self.current)
+        (from, self.current)
     }
 }
 

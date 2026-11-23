@@ -1,5 +1,5 @@
 //! Generated shared types from WebGME StateMachine: BlinkyController
-//! Do not hand-edit — regenerate from Rusty Studio.
+//! Control flow belongs to the design; user state modules cannot import StateId or transitions.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StateId {
@@ -43,16 +43,11 @@ impl Event {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum Outcome {
-    Stay,
-    Transition(StateId),
-    Emit(Event),
-}
-
-#[derive(Debug, Clone, PartialEq)]
 pub struct Globals {
     pub led_high: bool,
+    // @rusty:bounds min="0" max=""
     pub blink_count: u32,
+    // @rusty:bounds min="1" max=""
     pub max_blinks: u32,
     pub temperature_c: i32,
 }

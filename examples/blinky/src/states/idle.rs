@@ -1,21 +1,22 @@
-//! State module: Idle
-//! Waiting for Start command; ensures LED is driven low.
+#![allow(unused_variables)]
+//! State hooks for: Idle
+//! Topology and guards are generated in src/machine.rs.
 
-use crate::types::{Event, Globals, Outcome, StateId};
+use crate::types::Globals;
 
+/// Entry action when entering Idle
+// @rusty:hook entry
 pub fn on_enter(globals: &mut Globals) {
     globals.led_high = false;
 }
 
-pub fn on_event(globals: &mut Globals, event: &Event) -> Outcome {
-    match event {
-        Event::Start => {
-            globals.blink_count = 0;
-            Outcome::Transition(StateId::LedOn)
-        }
-        Event::FaultDetected => Outcome::Transition(StateId::Fault),
-        _ => Outcome::Stay,
-    }
-}
+/// Exit action when leaving Idle
+// @rusty:hook exit
+pub fn on_exit(globals: &mut Globals) {}
 
-pub fn on_exit(_globals: &mut Globals) {}
+/// Transition: Idle --(Start)--> LedOn
+/// Guard: (unconditional)
+// @rusty:hook tr:tr_start
+pub fn tr_start(globals: &mut Globals) {
+    globals.blink_count = 0;
+}

@@ -1,13 +1,21 @@
 (function (root, factory) {
   if (typeof module === "object" && module.exports) {
-    module.exports = factory(require("./rustContract"));
+    module.exports = factory(require("./rustContract"), require("./rustGuardLang"));
   } else {
-    root.RustyCodegen = factory(root.RustyContract);
+    root.RustyCodegen = factory(root.RustyContract, root.RustyGuardLang);
   }
-})(typeof globalThis !== "undefined" ? globalThis : this, function (contract) {
+})(typeof globalThis !== "undefined" ? globalThis : this, function (contract, guardLang) {
   "use strict";
 
-  const { toSnakeCase, toPascalCase, toCrateName, defaultStateCode } = contract;
+  const {
+    toSnakeCase,
+    toPascalCase,
+    toCrateName,
+    resolveStateTransitionHooks,
+    composeStateModuleRs,
+    compareTransitions,
+    transitionKey,
+  } = contract;
 
   function formatRustDefaultValue(rustType, rawVal) {
     const t = String(rustType || "i32").trim();
@@ -23,7 +31,6 @@
       if (!v) return "0.0";
       return v.includes(".") ? v : `${v}.0`;
     }
-    // integer types (i32, i64, u32, u64, usize)
     return v && /^-?\d+$/.test(v) ? v : "0";
   }
 
@@ -94,7 +101,15 @@ path = "src/main.rs"
     const globalFields =
       globals.length > 0
         ? globals
-            .map((g) => `    pub ${toSnakeCase(g.name)}: ${g.rustType || "i32"},`)
+            .map((g) => {
+              const minV = g.minValue !== undefined && g.minValue !== null ? String(g.minValue).trim() : "";
+              const maxV = g.maxValue !== undefined && g.maxValue !== null ? String(g.maxValue).trim() : "";
+              const boundsComment =
+                minV || maxV
+                  ? `    // @rusty:bounds min=${JSON.stringify(minV)} max=${JSON.stringify(maxV)}\n`
+                  : "";
+              return `${boundsComment}    pub ${toSnakeCase(g.name)}: ${g.rustType || "i32"},`;
+            })
             .join("\n")
         : "    pub _reserved: u32,";
 
@@ -122,7 +137,7 @@ path = "src/main.rs"
         : '            format!("\\"_reserved\\":{}", self._reserved)';
 
     return `//! Generated shared types from WebGME StateMachine: ${model.name || "StateMachine"}
-//! Do not hand-edit — regenerate from Rusty Studio.
+//! Control flow belongs to the design; user state modules cannot import StateId or transitions.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StateId {
@@ -152,13 +167,6 @@ ${eventParseArms}
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum Outcome {
-    Stay,
-    Transition(StateId),
-    Emit(Event),
-}
-
-#[derive(Debug, Clone, PartialEq)]
 pub struct Globals {
 ${globalFields}
 }
@@ -185,7 +193,7 @@ ${globalJsonParts}
   function generateStatesModRs(model) {
     const states = model.states || [];
     return (
-      "//! State modules synchronized via webgme-git.\n\n" +
+      "//! State hook modules synchronized via webgme-git.\n\n" +
       states.map((s) => `pub mod ${toSnakeCase(s.name)};`).join("\n") +
       "\n"
     );
@@ -193,52 +201,209 @@ ${globalJsonParts}
 
   function generateMachineRs(model) {
     const states = model.states || [];
-    const transitions = model.transitions || [];
+    const transitions = (model.transitions || []).slice().sort(compareTransitions);
     const initialState = states.find((s) => s.isInitial) || states[0];
     const initialVariant = initialState ? toPascalCase(initialState.name) : "Idle";
-
-    const enterArms = states
-      .map(
-        (s) =>
-          `            StateId::${toPascalCase(s.name)} => states::${toSnakeCase(s.name)}::on_enter(&mut self.globals),`,
-      )
-      .join("\n");
-
-    const exitArms = states
-      .map(
-        (s) =>
-          `            StateId::${toPascalCase(s.name)} => states::${toSnakeCase(s.name)}::on_exit(&mut self.globals),`,
-      )
-      .join("\n");
-
-    const eventArms = states
-      .map(
-        (s) =>
-          `            StateId::${toPascalCase(s.name)} => states::${toSnakeCase(s.name)}::on_event(&mut self.globals, &current_ev),`,
-      )
-      .join("\n");
-
-    // Fallback model-level transition table for states whose code returns Outcome::Stay
-    const sortedTransitions = [...transitions].sort(
-      (a, b) => (Number(a.priority) || 0) - (Number(b.priority) || 0),
+    const eventsByPascal = new Map(
+      (model.events || []).map((ev) => [toPascalCase(ev.name), ev]),
     );
-    const modelTransitionChecks = sortedTransitions
-      .filter((t) => t.srcName && t.dstName && t.event)
-      .map((t) => {
-        const src = toPascalCase(t.srcName);
-        const dst = toPascalCase(t.dstName);
-        const ev = toPascalCase(t.event);
-        const evDef = (model.events || []).find((e) => toPascalCase(e.name) === ev);
-        const evPattern = evDef && evDef.payloadType ? `Event::${ev}(_)` : `Event::${ev}`;
-        const guard = t.guard && t.guard.trim() ? ` && (${t.guard.trim()})` : "";
-        return `        if self.current == StateId::${src} && matches!(event, ${evPattern})${guard} {\n            return Some(StateId::${dst});\n        }`;
-      })
-      .join("\n");
 
-    return `//! Generated state machine dispatcher for ${model.name || "StateMachine"}.
+    const enterArms =
+      states.length > 0
+        ? states
+            .map(
+              (s) =>
+                `            StateId::${toPascalCase(s.name)} => states::${toSnakeCase(s.name)}::on_enter(&mut self.globals),`,
+            )
+            .join("\n")
+        : "            StateId::Idle => {},";
+
+    const exitArms =
+      states.length > 0
+        ? states
+            .map(
+              (s) =>
+                `            StateId::${toPascalCase(s.name)} => states::${toSnakeCase(s.name)}::on_exit(&mut self.globals),`,
+            )
+            .join("\n")
+        : "            StateId::Idle => {},";
+
+    // Resolve squashed hook function metadata per state
+    const hookByTrKey = new Map();
+    const stateByName = new Map(states.map((s) => [s.name, s]));
+    const stateById = new Map(states.filter((s) => s.id).map((s) => [s.id, s]));
+    for (const st of states) {
+      const hooks = resolveStateTransitionHooks(model, st);
+      for (const h of hooks) {
+        hookByTrKey.set(h.trKey, { ...h, srcState: st });
+      }
+    }
+
+    const validTransitions = [];
+    for (let i = 0; i < transitions.length; i++) {
+      const tr = transitions[i];
+      const srcSt = (tr.srcId && stateById.get(tr.srcId)) || stateByName.get(tr.srcName);
+      const dstSt = (tr.dstId && stateById.get(tr.dstId)) || stateByName.get(tr.dstName);
+      if (!srcSt || !dstSt || !tr.event) continue;
+
+      const trKey = transitionKey(tr);
+      const hook = hookByTrKey.get(trKey) || {
+        trKey,
+        fnName: `tr_step_${i}`,
+        hasAction: Boolean(tr.action && tr.action.trim()),
+        payloadType: "",
+      };
+      const evPascal = toPascalCase(tr.event);
+      const evDef = eventsByPascal.get(evPascal) || null;
+      const variantName = `T${i}${toPascalCase(srcSt.name)}${evPascal}`;
+      validTransitions.push({
+        idx: i,
+        tr,
+        trKey,
+        variantName,
+        srcName: srcSt.name,
+        dstName: dstSt.name,
+        srcPascal: toPascalCase(srcSt.name),
+        dstPascal: toPascalCase(dstSt.name),
+        srcSnake: toSnakeCase(srcSt.name),
+        evPascal,
+        evDef,
+        payloadType: evDef && evDef.payloadType ? String(evDef.payloadType).trim() : "",
+        hook,
+        isSelf: srcSt.name === dstSt.name,
+        reenter: Boolean(tr.reenter),
+      });
+    }
+
+    const transVariants =
+      validTransitions.length > 0
+        ? validTransitions.map((vt) => `    ${vt.variantName},`).join("\n")
+        : "    NoTransition,";
+
+    // Group transitions by (srcPascal, evPascal) for select_transition
+    const selectGroups = new Map();
+    for (const vt of validTransitions) {
+      const gk = `${vt.srcPascal}::${vt.evPascal}`;
+      if (!selectGroups.has(gk)) selectGroups.set(gk, []);
+      selectGroups.get(gk).push(vt);
+    }
+
+    const selectArms = [];
+    for (const groupList of selectGroups.values()) {
+      const sample = groupList[0];
+      const usesPayloadInGuard = groupList.some((vt) =>
+        /\bpayload\b/.test(vt.tr.guard || ""),
+      );
+      const evPat = sample.payloadType
+        ? usesPayloadInGuard
+          ? `Event::${sample.evPascal}(payload)`
+          : `Event::${sample.evPascal}(_)`
+        : `Event::${sample.evPascal}`;
+
+      const bodyLines = [];
+      if (sample.payloadType && usesPayloadInGuard) {
+        if (sample.payloadType === "String") {
+          bodyLines.push("                let payload = payload.as_str();");
+        } else {
+          bodyLines.push("                let payload = *payload;");
+        }
+      }
+
+      for (const vt of groupList) {
+        const metaObj = {
+          id: vt.variantName,
+          src: vt.srcName,
+          dst: vt.dstName,
+          event: vt.evPascal,
+          name: vt.tr.name || "",
+          reenter: vt.reenter,
+          fn: vt.hook.fnName,
+          guard: String(vt.tr.guard || "").trim(),
+        };
+        bodyLines.push(`                // @rusty:tr ${JSON.stringify(metaObj)}`);
+
+        const rawGuard = String(vt.tr.guard || "").trim();
+        if (!rawGuard) {
+          bodyLines.push(
+            `                debug_assert!(matched.is_none(), "Non-deterministic guard overlap in ${vt.srcName} on ${vt.evPascal}");`,
+          );
+          bodyLines.push(`                matched = Some(TransitionId::${vt.variantName});`);
+        } else {
+          const rustCond = guardLang.emitGuardRust(rawGuard, model, vt.evDef);
+          bodyLines.push(`                if ${rustCond} {`);
+          bodyLines.push(
+            `                    debug_assert!(matched.is_none(), "Non-deterministic guard overlap in ${vt.srcName} on ${vt.evPascal}");`,
+          );
+          bodyLines.push(`                    matched = Some(TransitionId::${vt.variantName});`);
+          bodyLines.push("                }");
+        }
+      }
+
+      selectArms.push(
+        `            (StateId::${sample.srcPascal}, ${evPat}) => {\n${bodyLines.join("\n")}\n            }`,
+      );
+    }
+
+    const execArms = validTransitions.map((vt) => {
+      const lines = [];
+      const runLifecycle = !vt.isSelf || vt.reenter;
+      if (runLifecycle) {
+        lines.push("                self.exit_current();");
+      }
+      if (vt.hook.hasAction) {
+        if (vt.payloadType) {
+          lines.push(`                if let Event::${vt.evPascal}(payload) = event {`);
+          if (vt.payloadType === "String") {
+            lines.push(`                    states::${vt.srcSnake}::${vt.hook.fnName}(&mut self.globals, payload.as_str());`);
+          } else {
+            lines.push(`                    states::${vt.srcSnake}::${vt.hook.fnName}(&mut self.globals, *payload);`);
+          }
+          lines.push("                }");
+        } else {
+          lines.push(`                states::${vt.srcSnake}::${vt.hook.fnName}(&mut self.globals);`);
+        }
+      }
+      if (runLifecycle) {
+        lines.push(`                self.current = StateId::${vt.dstPascal};`);
+        lines.push("                self.enter_current();");
+      }
+      if (lines.length === 0) {
+        lines.push("                // No exit/action/entry for silent internal self-transition");
+      }
+      return `            TransitionId::${vt.variantName} => {\n${lines.join("\n")}\n            }`;
+    });
+
+    const selectSection =
+      validTransitions.length > 0
+        ? `        let globals = &self.globals;
+        let _ = globals;
+        let mut matched: Option<TransitionId> = None;
+        match (self.current, event) {
+${selectArms.join("\n")}
+            _ => {}
+        }
+        matched`
+        : "        let _ = event;\n        None";
+
+    const execSection =
+      validTransitions.length > 0
+        ? `        let _ = event;
+        match tid {
+${execArms.join("\n")}
+        }`
+        : "        let _ = (tid, event);\n        match tid {\n            TransitionId::NoTransition => {}\n        }";
+
+    return `//! Generated model-driven state machine dispatcher for ${model.name || "StateMachine"}.
+//! All topology, event dispatch, and mutual-exclusivity checks live here.
 
 use crate::states;
-use crate::types::{Event, Globals, Outcome, StateId};
+use crate::types::{Event, Globals, StateId};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum TransitionId {
+${transVariants}
+}
 
 pub struct StateMachine {
     pub current: StateId,
@@ -269,48 +434,21 @@ ${exitArms}
         }
     }
 
-    fn evaluate_model_transitions(&self, event: &Event) -> Option<StateId> {
-        let globals = &self.globals;
-        let _ = (globals, event);
-${modelTransitionChecks || "        None"}
-${modelTransitionChecks ? "        None" : ""}
+    pub fn select_transition(&self, event: &Event) -> Option<TransitionId> {
+${selectSection}
+    }
+
+    fn execute_transition(&mut self, tid: TransitionId, event: &Event) {
+${execSection}
     }
 
     pub fn dispatch(&mut self, event: &Event) -> (StateId, StateId) {
-        let initial_from = self.current;
-        let mut pending: Option<Event> = Some(event.clone());
-        let mut depth = 0u8;
-
-        while let Some(current_ev) = pending.take() {
-            if depth >= 8 {
-                break;
-            }
-            depth += 1;
-
-            let outcome = match self.current {
-${eventArms}
-            };
-
-            let next_state = match outcome {
-                Outcome::Transition(target) => Some(target),
-                Outcome::Emit(emitted) => {
-                    pending = Some(emitted);
-                    None
-                }
-                Outcome::Stay => self.evaluate_model_transitions(&current_ev),
-            };
-
-            if let Some(target) = next_state {
-                if target != self.current {
-                    self.exit_current();
-                    self.current = target;
-                    self.enter_current();
-                }
-            }
+        let from = self.current;
+        if let Some(tid) = self.select_transition(event) {
+            self.execute_transition(tid, event);
         }
-
         self.step_count += 1;
-        (initial_from, self.current)
+        (from, self.current)
     }
 }
 
@@ -324,14 +462,14 @@ impl Default for StateMachine {
 
   function generateLibRs(model) {
     return `//! Crate root for ${model.name || "StateMachine"}
-//! Generated by Rusty Studio (WebGME topology + webgme-git Rust state files).
+//! Generated by Rusty Studio (WebGME model-driven topology + webgme-git state hooks).
 
 pub mod types;
 pub mod states;
 pub mod machine;
 
-pub use machine::StateMachine;
-pub use types::{Event, Globals, Outcome, StateId};
+pub use machine::{StateMachine, TransitionId};
+pub use types::{Event, Globals, StateId};
 
 #[cfg(test)]
 mod tests {
@@ -395,15 +533,9 @@ fn main() {
     files["src/lib.rs"] = generateLibRs(model);
     files["src/main.rs"] = generateMainRs(model);
 
-    const transitions = model.transitions || [];
     for (const st of model.states || []) {
       const modName = toSnakeCase(st.name);
-      const outgoing = transitions.filter((t) => t.srcName === st.name);
-      const code =
-        st.code && st.code.trim()
-          ? st.code
-          : defaultStateCode(st.name, outgoing);
-      files[`src/states/${modName}.rs`] = code;
+      files[`src/states/${modName}.rs`] = composeStateModuleRs(model, st).code;
     }
 
     return files;

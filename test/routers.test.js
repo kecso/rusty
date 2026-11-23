@@ -67,6 +67,16 @@ describe("Rusty WebGME Routers", () => {
     assert.match(html, /id="btnConnectRepo"[^>]*>Connect Git Repository…<\/button>/);
     assert.match(html, /name="repoConnectMode"[^>]*value="bind"/);
     assert.match(html, /name="repoConnectMode"[^>]*value="import"/);
+    assert.match(html, /src="\/routers\/studio\/common\/rustGuardLang\.js"/);
+    assert.match(html, /data-state-hook="entry"/);
+    assert.match(html, /data-state-hook="exit"/);
+    assert.match(html, /data-trans-tab="guard"/);
+    assert.match(html, /data-trans-tab="action"/);
+    assert.doesNotMatch(html, /id="inpTransPriority"/);
+
+    const guardRes = await fetch(`${baseUrl}/routers/studio/common/rustGuardLang.js`);
+    assert.equal(guardRes.status, 200);
+    assert.match(await guardRes.text(), /checkMachineDeterminism/);
 
     const jsRes = await fetch(`${baseUrl}/routers/studio/common/rustSimEngine.js`);
     assert.equal(jsRes.status, 200);

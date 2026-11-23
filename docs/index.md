@@ -3,44 +3,39 @@ layout: home
 
 hero:
   name: "Rusty Studio"
-  text: "Visual State Machine Design Meets Git-Backed Rust"
-  tagline: "Design your machines visually in a version-controlled database, write state code stored natively in Git, catch mismatches as you type or reshape your design, and ship completely standalone Rust crates."
+  text: "Model-Driven Visual Rust State Machines"
+  tagline: "Design pure deterministic state machines visually in WebGME, prove guard mutual exclusivity formally, edit hook behavior in contextual read-only Monaco synced live to your GitHub fork, and verify against native rustc."
+  image:
+    src: /logo.svg
+    alt: Rusty Studio rusty cogwheel machine logo
   actions:
     - theme: brand
-      text: Start the Counter Tutorial
-      link: /tutorial/00-build-a-counter
-    - theme: alt
-      text: Getting Started
+      text: Get Started & Fork
       link: /getting-started
     - theme: alt
-      text: Demo Showcases
-      link: /tutorial/02-smart-thermostat
+      text: Counter Tutorial
+      link: /tutorial/00-build-a-counter
+    - theme: alt
+      text: Guard & Exclusivity Prover
+      link: /concepts/model-driven-architecture
 
 features:
-  - icon: 📐
-    title: Visual Design, Version-Controlled
-    details: Model your states, transitions, guards, events, and shared data visually while storing the entire machine architecture in a central version-controlled database.
-  - icon: 🗂️
-    title: Hybrid Code Stored in Plain Git
-    details: Edit each state's Rust implementation inside the visual studio while the files themselves live in a regular Git repository that works seamlessly with any external IDE or CI pipeline.
-  - icon: 🔍
-    title: Continuous Edit & Impact Checks
-    details: Every line of code and transition guard is checked in real time against your design, and whenever a design change affects existing state code, Rusty flags every impacted piece immediately.
-  - icon: 📦
-    title: Standalone Rust Crates & Verification
-    details: Export clean, dependency-free Cargo crates where your design, transitions, and guards are compiled directly into Rust—verified interactively in the browser and against native cargo.
+  - title: Pure Model-Driven Control Flow
+    details: WebGME owns every State, Event, bounded GlobalVar, Transition, and guard. States expose only on_enter and on_exit while transitions run squashed tr_* hooks—never StateId, Event, or ad-hoc branching.
+  - title: Formal Guard Mutual-Exclusivity Proofs
+    details: A pure Rust guard language backed by DNF expansion, BigInt rational Fourier-Motzkin elimination, and integer branch-and-bound proves determinism mathematically and reports concrete overlap counterexamples in <1 ms.
+  - title: Contextual Read-Only Monaco + GitHub Sync
+    details: Inspect full src/states/<state>.rs files at exact hook placement with all surrounding signatures locked read-only, while webgme-git pushes atomic commits to your fork's dev branch with auto-rebase and 3-way conflict resolution.
+  - title: Interactive Simulator & Native rustc Parity
+    details: Step through typed events, f64 payloads, self-transition physics, and design-impact warnings in the browser—then replay the exact trace in native Cargo builds via /routers/rustsim to prove bit-exact parity.
 ---
 
-## See Rusty Studio in Action
+## Live Studio Preview
 
-### Clean Fixed Layout, Interactive Transitions & Native Verification
-
-Browse states, shared data, and color-coded events in collapsible explorer panels, inspect guarded transitions via hover tooltips, and confirm browser runs match compiled native Rust:
+### `SmartThermostat`: Layered Layout, Guard Badges & Live Simulation
 
 ![SmartThermostat showcase in fixed layered layout with native parity](/images/demo-smart-thermostat.gif)
 
-### Design-Change Impact Tracking & Edit-Time Checks
+### Guard Exclusivity Prover, Read-Only Hook Editing & `rustc`
 
-Rename or retype a shared variable and immediately see every state and guard affected by the design change—then get sub-millisecond Monaco feedback and full compiler verification as you update your Rust code:
-
-![Design impact tracking, Monaco edit-time checks, and rustc verification](/images/demo-monaco-edit-checks.gif)
+![Guard proofs, contextual read-only Monaco edit-time checks, and rustc verification](/images/demo-monaco-edit-checks.gif)

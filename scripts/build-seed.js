@@ -17,8 +17,8 @@ const { execFileSync } = require("child_process");
 const {
   getStarterBlinkyModel,
   getSmartThermostatModel,
-  toSnakeCase,
-  toPascalCase,
+  getStateHookBodies,
+  composeStateModuleRs,
 } = require("../src/common/rustContract");
 const {
   extractDependencies,
@@ -98,6 +98,8 @@ function instantiateMachine(core, root, meta, model, rootPos) {
     core.setAttribute(gNode, "name", g.name);
     core.setAttribute(gNode, "rustType", g.rustType);
     core.setAttribute(gNode, "initialValue", g.initialValue);
+    core.setAttribute(gNode, "minValue", String(g.minValue ?? ""));
+    core.setAttribute(gNode, "maxValue", String(g.maxValue ?? ""));
     core.setAttribute(gNode, "description", g.description || "");
     core.setRegistry(gNode, "position", { x: 80, y: 420 + idx * 55 });
     const gPath = core.getPath(gNode);
@@ -118,16 +120,19 @@ function instantiateMachine(core, root, meta, model, rootPos) {
     modelEventsWithIds.push({ ...e, id: ePath });
   });
 
-  // States (gitOwner/Repo/Branch/Path left empty unless explicitly overridden, inheriting from StateMachine)
+  // States (V3 pure entryCode/exitCode + composed codeCache; inherits machine Git dir cleanly)
   const stateNodesByName = new Map();
   const modelStatesWithIds = [];
   for (const st of model.states || []) {
+    const hooks = getStateHookBodies(st);
     const sNode = core.createNode({ parent: smNode, base: stateMeta });
     core.setAttribute(sNode, "name", st.name);
     core.setAttribute(sNode, "description", st.description || "");
     core.setAttribute(sNode, "isInitial", Boolean(st.isInitial));
     core.setAttribute(sNode, "isFinal", Boolean(st.isFinal));
     core.setAttribute(sNode, "color", st.color || "#38bdf8");
+    core.setAttribute(sNode, "entryCode", hooks.entryCode || "");
+    core.setAttribute(sNode, "exitCode", hooks.exitCode || "");
     core.setAttribute(sNode, "codeCache", st.code || "");
     core.setAttribute(sNode, "gitOwner", st.gitOwner || "");
     core.setAttribute(sNode, "gitRepo", st.gitRepo || "");
@@ -144,10 +149,10 @@ function instantiateMachine(core, root, meta, model, rootPos) {
     const sPath = core.getPath(sNode);
     stateNodesByName.set(st.name, sNode);
     targetNodesByPath.set(sPath, sNode);
-    modelStatesWithIds.push({ ...st, id: sPath });
+    modelStatesWithIds.push({ ...st, id: sPath, entryCode: hooks.entryCode, exitCode: hooks.exitCode });
   }
 
-  // Transitions
+  // Transitions (NO priority; includes reenter flag)
   const transitionEntries = [];
   for (const tr of model.transitions || []) {
     const srcNode = stateNodesByName.get(tr.srcName);
@@ -158,13 +163,13 @@ function instantiateMachine(core, root, meta, model, rootPos) {
     core.setAttribute(tNode, "event", tr.event);
     core.setAttribute(tNode, "guard", tr.guard || "");
     core.setAttribute(tNode, "action", tr.action || "");
-    core.setAttribute(tNode, "priority", tr.priority);
+    core.setAttribute(tNode, "reenter", Boolean(tr.reenter));
     core.setPointer(tNode, "src", srcNode);
     core.setPointer(tNode, "dst", dstNode);
     transitionEntries.push({ tr, tNode });
   }
 
-  // Populate real WebGME `dependsOn` Set relationships + `depsSignature`
+  // Populate real WebGME `dependsOn` Set relationships + `depsSignature` + composed `codeCache`
   const modelWithIds = {
     ...model,
     globals: modelGlobalsWithIds,
@@ -174,7 +179,9 @@ function instantiateMachine(core, root, meta, model, rootPos) {
 
   for (const st of modelStatesWithIds) {
     const sNode = stateNodesByName.get(st.name);
-    const deps = extractDependencies(st.code || "", modelWithIds);
+    const composed = composeStateModuleRs(modelWithIds, st).code;
+    core.setAttribute(sNode, "codeCache", composed);
+    const deps = extractDependencies(`${st.entryCode || ""}\n${st.exitCode || ""}`, modelWithIds);
     core.setAttribute(sNode, "depsSignature", serializeDepsSnapshot(deps.snapshot));
     core.createSet(sNode, "dependsOn");
     for (const mid of deps.memberIds) {
@@ -184,7 +191,11 @@ function instantiateMachine(core, root, meta, model, rootPos) {
   }
 
   for (const { tr, tNode } of transitionEntries) {
-    const deps = extractDependencies(tr.guard || "", modelWithIds, { triggerEvent: tr.event });
+    const deps = extractDependencies("", modelWithIds, {
+      triggerEvent: tr.event,
+      guardText: tr.guard || "",
+      actionText: tr.action || "",
+    });
     core.setAttribute(tNode, "depsSignature", serializeDepsSnapshot(deps.snapshot));
     core.createSet(tNode, "dependsOn");
     for (const mid of deps.memberIds) {

@@ -10,8 +10,8 @@ const { getStarterBlinkyModel } = require("../src/common/rustContract");
 const { generateCrateFiles } = require("../src/common/rustCodegen");
 const { createSimulation } = require("../src/common/rustSimEngine");
 
-describe("RustyCodegen + Native Rust Parity", () => {
-  it("generates all expected crate files and compiles/runs with exact parity to JS simulator", () => {
+describe("RustyCodegen + Native Rust Parity (V3 Model-Driven)", () => {
+  it("generates pure hook state modules without StateId/Outcome and compiles/runs with exact JS parity", () => {
     const model = getStarterBlinkyModel();
     const files = generateCrateFiles(model);
 
@@ -24,6 +24,16 @@ describe("RustyCodegen + Native Rust Parity", () => {
     assert.ok(files["src/states/led_on.rs"]);
     assert.ok(files["src/states/led_off.rs"]);
     assert.ok(files["src/states/fault.rs"]);
+
+    // Verify user state files NEVER import StateId/Outcome/Event and use squashed tr_* names
+    assert.doesNotMatch(files["src/types.rs"], /pub enum Outcome/);
+    for (const stFile of ["src/states/idle.rs", "src/states/led_on.rs", "src/states/led_off.rs", "src/states/fault.rs"]) {
+      assert.doesNotMatch(files[stFile], /\bStateId\b/);
+      assert.doesNotMatch(files[stFile], /\bOutcome\b/);
+      assert.doesNotMatch(files[stFile], /\bEvent::/);
+    }
+    assert.match(files["src/states/idle.rs"], /pub fn tr_start\(/);
+    assert.match(files["src/states/fault.rs"], /pub fn tr_reset\(/);
 
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "rusty-codegen-test-"));
     try {

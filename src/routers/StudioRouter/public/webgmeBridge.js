@@ -3,7 +3,7 @@
   "use strict";
 
   /**
-   * Proper WebGME Client Bridge.
+   * Proper WebGME Client Bridge (V3 Model-Driven Architecture).
    *
    * Connects directly to the running WebGME server via `GME.classes.Client`
    * (loaded from `/gme-dist/webgme.classes.build.js` + `/gmeConfig.json`).
@@ -113,7 +113,6 @@
         }
       });
 
-      // Subscribe to ROOT + StateMachines + their children (States, Transitions, Globals, Events)
       this.client.updateTerritory(this.uiId, {
         "": { children: 2 },
       });
@@ -153,7 +152,6 @@
       for (const cid of childIds) {
         const node = this.client.getNode(cid);
         if (!node) continue;
-        // Skip Meta nodes themselves
         if (cid === smMetaId) continue;
         if (!this._isMetaType(node, "StateMachine")) continue;
         machines.push(this._extractMachine(node));
@@ -180,6 +178,14 @@
           const name = child.getAttribute("name") || "State";
           const pos = child.getRegistry("position") || { x: 160, y: 160 };
           stateNameById.set(cid, name);
+          const rawCode = child.getAttribute("codeCache") || "";
+          const rawEntry = child.getAttribute("entryCode");
+          const rawExit = child.getAttribute("exitCode");
+          const resolvedHooks = global.RustyContract.getStateHookBodies({
+            entryCode: rawEntry,
+            exitCode: rawExit,
+            code: rawCode,
+          });
           states.push({
             id: cid,
             name,
@@ -187,7 +193,9 @@
             isInitial: Boolean(child.getAttribute("isInitial")),
             isFinal: Boolean(child.getAttribute("isFinal")),
             color: child.getAttribute("color") || "#38bdf8",
-            code: child.getAttribute("codeCache") || "",
+            entryCode: resolvedHooks.entryCode,
+            exitCode: resolvedHooks.exitCode,
+            code: rawCode,
             gitOwner: child.getAttribute("gitOwner") || "",
             gitRepo: child.getAttribute("gitRepo") || "",
             gitBranch: child.getAttribute("gitBranch") || "",
@@ -204,6 +212,8 @@
             name: child.getAttribute("name") || "var",
             rustType: child.getAttribute("rustType") || "i32",
             initialValue: String(child.getAttribute("initialValue") ?? "0"),
+            minValue: String(child.getAttribute("minValue") ?? ""),
+            maxValue: String(child.getAttribute("maxValue") ?? ""),
             description: child.getAttribute("description") || "",
           });
         } else if (this._isMetaType(child, "EventDef")) {
@@ -231,7 +241,7 @@
           event: tNode.getAttribute("event") || "Tick",
           guard: tNode.getAttribute("guard") || "",
           action: tNode.getAttribute("action") || "",
-          priority: Number(tNode.getAttribute("priority") ?? 1),
+          reenter: Boolean(tNode.getAttribute("reenter")),
           dependsOn: tNode.getMemberIds("dependsOn") || [],
           depsSignature: tNode.getAttribute("depsSignature") || "",
         };
@@ -286,6 +296,14 @@
     createState(machineId, opts) {
       const baseId = this.getMetaId("State");
       if (!baseId) throw new Error("State meta node not found");
+      const entryCode = opts.entryCode || "";
+      const exitCode = opts.exitCode || "";
+      const composed =
+        opts.code ||
+        global.RustyContract.composeStateModuleRs(
+          { name: "StateMachine", events: [], transitions: [] },
+          { name: opts.name, entryCode, exitCode },
+        ).code;
       return this.runTransaction(`Add State ${opts.name}`, () => {
         const id = this.client.createNode({ parentId: machineId, baseId });
         this.client.setAttribute(id, "name", opts.name);
@@ -293,11 +311,9 @@
         this.client.setAttribute(id, "isInitial", Boolean(opts.isInitial));
         this.client.setAttribute(id, "isFinal", Boolean(opts.isFinal));
         this.client.setAttribute(id, "color", opts.color || "#38bdf8");
-        this.client.setAttribute(
-          id,
-          "codeCache",
-          opts.code || global.RustyContract.defaultStateCode(opts.name, []),
-        );
+        this.client.setAttribute(id, "entryCode", entryCode);
+        this.client.setAttribute(id, "exitCode", exitCode);
+        this.client.setAttribute(id, "codeCache", composed);
         this.client.setAttribute(id, "gitOwner", opts.gitOwner || "");
         this.client.setAttribute(id, "gitRepo", opts.gitRepo || "");
         this.client.setAttribute(id, "gitBranch", opts.gitBranch || "");
@@ -334,19 +350,34 @@
       });
     }
 
+    updateStateHookAndCode(stateId, { entryCode, exitCode, codeCache }, nextMemberIds, depsSignature, msg) {
+      this.runTransaction(msg || `Update Rust hooks for ${stateId}`, () => {
+        if (entryCode !== undefined) this.client.setAttribute(stateId, "entryCode", entryCode);
+        if (exitCode !== undefined) this.client.setAttribute(stateId, "exitCode", exitCode);
+        if (codeCache !== undefined) this.client.setAttribute(stateId, "codeCache", codeCache);
+        this._applyDepsInsideTx(stateId, nextMemberIds, depsSignature);
+      });
+    }
+
     updateStateCodeAndDeps(nodeId, code, nextMemberIds, depsSignature, msg) {
+      const parsed = global.RustyContract.parseStateModuleRs(code || "");
       this.runTransaction(msg || `Update Rust code for ${nodeId}`, () => {
+        this.client.setAttribute(nodeId, "entryCode", parsed.entryCode || "");
+        this.client.setAttribute(nodeId, "exitCode", parsed.exitCode || "");
         this.client.setAttribute(nodeId, "codeCache", code);
         this._applyDepsInsideTx(nodeId, nextMemberIds, depsSignature);
       });
     }
 
-    updateTransitionAndDeps(nodeId, attrs, nextMemberIds, depsSignature, msg) {
+    updateTransitionAndDeps(nodeId, attrs, nextMemberIds, depsSignature, msg, srcStateCodeUpdate) {
       this.runTransaction(msg || `Update Transition ${nodeId}`, () => {
         for (const [k, v] of Object.entries(attrs)) {
           this.client.setAttribute(nodeId, k, v);
         }
         this._applyDepsInsideTx(nodeId, nextMemberIds, depsSignature);
+        if (srcStateCodeUpdate && srcStateCodeUpdate.stateId && srcStateCodeUpdate.codeCache !== undefined) {
+          this.client.setAttribute(srcStateCodeUpdate.stateId, "codeCache", srcStateCodeUpdate.codeCache);
+        }
       });
     }
 
@@ -382,6 +413,8 @@
         this.client.setAttribute(gid, "name", g.name);
         this.client.setAttribute(gid, "rustType", g.rustType || "i32");
         this.client.setAttribute(gid, "initialValue", String(g.initialValue ?? "0"));
+        this.client.setAttribute(gid, "minValue", String(g.minValue ?? ""));
+        this.client.setAttribute(gid, "maxValue", String(g.maxValue ?? ""));
         this.client.setAttribute(gid, "description", g.description || "");
         return { ...g, id: gid };
       });
@@ -397,11 +430,14 @@
       const stateIdByName = new Map();
       const statesWithIds = (model.states || []).map((st) => {
         const sid = this.client.createNode({ parentId: smId, baseId: stBase });
+        const hooks = global.RustyContract.getStateHookBodies(st);
         this.client.setAttribute(sid, "name", st.name);
         this.client.setAttribute(sid, "description", st.description || "");
         this.client.setAttribute(sid, "isInitial", Boolean(st.isInitial));
         this.client.setAttribute(sid, "isFinal", Boolean(st.isFinal));
         this.client.setAttribute(sid, "color", st.color || "#38bdf8");
+        this.client.setAttribute(sid, "entryCode", hooks.entryCode || "");
+        this.client.setAttribute(sid, "exitCode", hooks.exitCode || "");
         this.client.setAttribute(sid, "codeCache", st.code || "");
         this.client.setAttribute(sid, "gitOwner", "");
         this.client.setAttribute(sid, "gitRepo", "");
@@ -411,13 +447,18 @@
         this.client.setAttribute(sid, "gitBaseCommitSha", "");
         this.client.setRegistry(sid, "position", st.position || { x: 160, y: 160 });
         stateIdByName.set(st.name, sid);
-        return { ...st, id: sid };
+        return { ...st, id: sid, entryCode: hooks.entryCode, exitCode: hooks.exitCode };
       });
 
       const modelWithIds = { ...model, globals: globalsWithIds, events: eventsWithIds, states: statesWithIds };
 
       for (const st of statesWithIds) {
-        const deps = global.RustyAnalyzer.extractDependencies(st.code || "", modelWithIds);
+        const composed = global.RustyContract.composeStateModuleRs(modelWithIds, st).code;
+        this.client.setAttribute(st.id, "codeCache", composed);
+        const deps = global.RustyAnalyzer.extractDependencies(
+          `${st.entryCode || ""}\n${st.exitCode || ""}`,
+          modelWithIds,
+        );
         const sig = global.RustyAnalyzer.serializeDepsSnapshot(deps.snapshot);
         this.client.setAttribute(st.id, "depsSignature", sig);
         for (const mid of deps.memberIds) {
@@ -430,14 +471,22 @@
         const dstId = stateIdByName.get(tr.dstName);
         if (!srcId || !dstId) continue;
         const tid = this.client.createNode({ parentId: smId, baseId: trBase });
-        this.client.setAttribute(tid, "name", tr.name || `on_${global.RustyContract.toSnakeCase(tr.event)}`);
+        this.client.setAttribute(
+          tid,
+          "name",
+          tr.name || global.RustyContract.toSnakeCase(`${tr.event}_${tr.dstName}`),
+        );
         this.client.setAttribute(tid, "event", tr.event || "Tick");
         this.client.setAttribute(tid, "guard", tr.guard || "");
         this.client.setAttribute(tid, "action", tr.action || "");
-        this.client.setAttribute(tid, "priority", Number(tr.priority ?? 1));
+        this.client.setAttribute(tid, "reenter", Boolean(tr.reenter));
         this.client.setPointer(tid, "src", srcId);
         this.client.setPointer(tid, "dst", dstId);
-        const deps = global.RustyAnalyzer.extractDependencies(tr.guard || "", modelWithIds, { triggerEvent: tr.event });
+        const deps = global.RustyAnalyzer.extractDependencies("", modelWithIds, {
+          triggerEvent: tr.event,
+          guardText: tr.guard || "",
+          actionText: tr.action || "",
+        });
         const sig = global.RustyAnalyzer.serializeDepsSnapshot(deps.snapshot);
         this.client.setAttribute(tid, "depsSignature", sig);
         for (const mid of deps.memberIds) {
@@ -532,23 +581,27 @@
       });
     }
 
-    createTransition(machineId, { srcId, dstId, event, name, guard, action, priority }) {
+    createTransition(machineId, { srcId, dstId, event, name, guard, action, reenter }) {
       const baseId = this.getMetaId("Transition");
       if (!baseId) throw new Error("Transition meta node not found");
       return this.runTransaction(`Create Transition ${event}`, () => {
         const id = this.client.createNode({ parentId: machineId, baseId });
-        this.client.setAttribute(id, "name", name || `on_${global.RustyContract.toSnakeCase(event)}`);
+        this.client.setAttribute(
+          id,
+          "name",
+          name || global.RustyContract.toSnakeCase(event || "step"),
+        );
         this.client.setAttribute(id, "event", event || "Tick");
         this.client.setAttribute(id, "guard", guard || "");
         this.client.setAttribute(id, "action", action || "");
-        this.client.setAttribute(id, "priority", Number(priority ?? 1));
+        this.client.setAttribute(id, "reenter", Boolean(reenter));
         this.client.setPointer(id, "src", srcId);
         this.client.setPointer(id, "dst", dstId);
         return id;
       });
     }
 
-    createGlobalVar(machineId, { name, rustType, initialValue, description }) {
+    createGlobalVar(machineId, { name, rustType, initialValue, minValue, maxValue, description }) {
       const baseId = this.getMetaId("GlobalVar");
       if (!baseId) throw new Error("GlobalVar meta node not found");
       return this.runTransaction(`Add GlobalVar ${name}`, () => {
@@ -556,6 +609,8 @@
         this.client.setAttribute(id, "name", name);
         this.client.setAttribute(id, "rustType", rustType || "i32");
         this.client.setAttribute(id, "initialValue", String(initialValue ?? "0"));
+        this.client.setAttribute(id, "minValue", String(minValue ?? ""));
+        this.client.setAttribute(id, "maxValue", String(maxValue ?? ""));
         this.client.setAttribute(id, "description", description || "");
         return id;
       });
@@ -572,8 +627,6 @@
         return id;
       });
     }
-
-    // bindMachineRepo and importStateMachineModel live above
   }
 
   global.WebGMEBridge = WebGMEBridge;

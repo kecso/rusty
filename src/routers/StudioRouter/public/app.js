@@ -5,6 +5,7 @@
   const gitClient = new window.GitSyncClient("/routers/gitrouter");
   const {
     RustyContract,
+    RustyGuardLang,
     RustyCodegen,
     RustySimEngine,
     RustyAnalyzer,
@@ -20,11 +21,18 @@
     activeMachineId: null,
     selectedType: null, // 'state' | 'transition' | null
     selectedId: null,
+    stateHookTab: "entry", // 'entry' | 'exit' | 'transitions'
+    transSubTab: "guard", // 'guard' | 'action'
     connectMode: false,
     connectSourceId: null,
     dirtyStateIds: new Set(),
+    dirtyTransIds: new Set(),
+    draftEntryByStateId: new Map(),
+    draftExitByStateId: new Map(),
+    draftActionByTransId: new Map(),
     fetchedStateIds: new Set(),
-    editorLoadedStateId: null,
+    editorLoadedHookKey: null,
+    transLoadedActionKey: null,
     activeCrateFile: "Cargo.toml",
     // Layout & UI visibility
     leftHidden: false,
@@ -42,10 +50,12 @@
     // Active modals
     pendingConflict: null,
     elementModalConfirm: null,
+    lastReadOnlyToastAt: 0,
   };
 
   const $ = (id) => document.getElementById(id);
   let monacoEditor = null;
+  let transActionEditor = null;
 
   function toast(msg, kind = "ok") {
     const el = document.createElement("div");
@@ -53,6 +63,13 @@
     el.textContent = msg;
     $("toastStack").appendChild(el);
     setTimeout(() => el.remove(), 4200);
+  }
+
+  function notifyReadOnlyBlocked() {
+    const now = Date.now();
+    if (now - state.lastReadOnlyToastAt < 1800) return;
+    state.lastReadOnlyToastAt = now;
+    toast("Surrounding module lines are generated and read-only — edit inside the highlighted hook body", "warn");
   }
 
   function activeMachine() {
@@ -69,6 +86,19 @@
     const m = activeMachine();
     if (!m || state.selectedType !== "transition") return null;
     return m.transitions.find((t) => t.id === state.selectedId) || null;
+  }
+
+  function getLiveStateHookBody(st, kind) {
+    if (!st) return "";
+    if (kind === "entry") {
+      return state.draftEntryByStateId.has(st.id) ? state.draftEntryByStateId.get(st.id) : st.entryCode || "";
+    }
+    return state.draftExitByStateId.has(st.id) ? state.draftExitByStateId.get(st.id) : st.exitCode || "";
+  }
+
+  function getLiveTransitionAction(tr) {
+    if (!tr) return "";
+    return state.draftActionByTransId.has(tr.id) ? state.draftActionByTransId.get(tr.id) : tr.action || "";
   }
 
   function openElementModal({ title, fields, confirmLabel = "Save", onConfirm }) {
@@ -128,22 +158,32 @@
       return;
     }
 
+    const m = activeMachine();
     const payload = evStyle && evStyle.payloadType ? `(${evStyle.payloadType})` : "";
+    const isSelf = tr.srcName === tr.dstName;
+    const selfMode = isSelf ? (tr.reenter ? " · self: re-enter" : " · self: stay") : "";
+    const slugName = m
+      ? RustyContract.resolveTransitionFnName(
+          tr,
+          m.transitions.filter((t) => t.srcName === tr.srcName),
+          tr.srcName,
+        )
+      : "";
     const guardHtml =
       tr.guard && tr.guard.trim()
         ? `<div class="tt-guard">[${escapeHtml(tr.guard.trim())}]</div>`
         : `<div class="muted" style="font-size:10.5px;">Unconditional (no guard)</div>`;
     const actionHtml =
       tr.action && tr.action.trim()
-        ? `<div class="muted-mono" style="margin-top:3px;">action: ${escapeHtml(tr.action.trim())}</div>`
+        ? `<div class="muted-mono" style="margin-top:3px;">action hook: ${escapeHtml(slugName)}</div>`
         : "";
     const impactHtml = impactItem
       ? `<div class="tt-impact">⚠ ${escapeHtml(impactItem.reasons.map((r) => r.message).join("; "))}</div>`
       : "";
 
     tip.innerHTML = `
-      <div class="tt-title">[${escapeHtml(evStyle ? evStyle.glyph : "?")}] ${escapeHtml(tr.event)}${escapeHtml(payload)}</div>
-      <div class="tt-route">${escapeHtml(tr.srcName)} → ${escapeHtml(tr.dstName)} (priority ${Number(tr.priority ?? 1)})</div>
+      <div class="tt-title">[${escapeHtml(evStyle ? evStyle.glyph : "?")}] ${escapeHtml(tr.event)}${escapeHtml(payload)} · ${escapeHtml(tr.name || "")}</div>
+      <div class="tt-route">${escapeHtml(tr.srcName)} → ${escapeHtml(tr.dstName)}${escapeHtml(selfMode)}</div>
       ${guardHtml}
       ${actionHtml}
       ${impactHtml}
@@ -166,9 +206,7 @@
     },
     onSelectTransition(id) {
       if (state.rightHidden) togglePane("right", false);
-      state.selectedType = "transition";
-      state.selectedId = id;
-      renderAll();
+      selectTransitionForEditing(id);
     },
     onBackgroundClick() {
       state.selectedType = null;
@@ -183,7 +221,7 @@
       if (!m) return;
       if (!state.connectSourceId) {
         state.connectSourceId = stateId;
-        toast("Select destination state for transition", "ok");
+        toast("Select destination state for transition (click same state for self-transition)", "ok");
         renderCanvas();
         return;
       }
@@ -192,9 +230,12 @@
       state.connectMode = false;
       $("btnConnectMode").classList.remove("btn-active");
 
+      const srcSt = m.states.find((s) => s.id === srcId);
+      const dstSt = m.states.find((s) => s.id === stateId);
+      const isSelf = srcId === stateId;
       const evOptions = m.events.map((e) => e.name);
       openElementModal({
-        title: "Create Transition",
+        title: `Create Transition (${srcSt ? srcSt.name : "?"} → ${dstSt ? dstSt.name : "?"})`,
         confirmLabel: "Create Transition",
         fields: [
           {
@@ -204,19 +245,38 @@
             options: evOptions,
             value: evOptions[0] || "Tick",
           },
-          { name: "guard", label: "Guard Expression (optional)", placeholder: "e.g. globals.count >= 5", value: "" },
-          { name: "priority", label: "Priority", type: "number", value: "1" },
+          {
+            name: "name",
+            label: "Short Transition Name",
+            placeholder: "e.g. step_count",
+            value: "",
+          },
+          {
+            name: "guard",
+            label: "Pure Guard Expression (optional)",
+            placeholder: "e.g. count < limit",
+            value: "",
+          },
         ],
         onConfirm(vals) {
           const eventName = (vals.event || "").trim() || "Tick";
           const guard = (vals.guard || "").trim();
-          const deps = RustyAnalyzer.extractDependencies(guard, m, { triggerEvent: eventName });
+          const shortName =
+            (vals.name || "").trim() ||
+            RustyContract.toSnakeCase(`${eventName}_${dstSt ? dstSt.name : "next"}`);
+          const deps = RustyAnalyzer.extractDependencies("", m, {
+            triggerEvent: eventName,
+            guardText: guard,
+            actionText: "",
+          });
           const tid = bridge.createTransition(m.id, {
             srcId,
             dstId: stateId,
+            name: shortName,
             event: eventName,
             guard,
-            priority: Number(vals.priority || 1),
+            action: "",
+            reenter: false,
           });
           bridge.syncNodeDependencies(
             tid,
@@ -224,9 +284,8 @@
             RustyAnalyzer.serializeDepsSnapshot(deps.snapshot),
             `Set dependsOn for transition ${eventName}`,
           );
-          toast(`Created transition on ${eventName}`, "ok");
-          state.selectedType = "transition";
-          state.selectedId = tid;
+          toast(`Created ${isSelf ? "self-transition" : "transition"} on ${eventName}`, "ok");
+          selectTransitionForEditing(tid);
         },
       });
     },
@@ -235,9 +294,9 @@
   async function selectStateForEditing(id) {
     state.selectedType = "state";
     state.selectedId = id;
+    state.editorLoadedHookKey = null;
     renderAll();
 
-    // Auto-fetch latest Rust file from GitHub via webgme-git when editing a bound state
     const m = activeMachine();
     const st = selectedStateObj();
     if (!m || !st) return;
@@ -254,9 +313,16 @@
     }
   }
 
-  function renderAnalyzerDiagnostics(result) {
+  function selectTransitionForEditing(id) {
+    state.selectedType = "transition";
+    state.selectedId = id;
+    state.transLoadedActionKey = null;
+    renderAll();
+  }
+
+  function renderAnalyzerDiagnosticsFor(badgeId, latencyId, listId, editorInstance, result) {
     const { diagnostics, durationMs, stats } = result;
-    const badge = $("analyzerStatusBadge");
+    const badge = $(badgeId);
     if (stats.errors > 0) {
       badge.className = "badge badge-err";
       badge.textContent = `✕ ${stats.errors} error${stats.errors === 1 ? "" : "s"}${stats.warnings ? ` · ${stats.warnings} warn` : ""}`;
@@ -267,9 +333,9 @@
       badge.className = "badge badge-ok";
       badge.textContent = "✓ 0 errors";
     }
-    $("analyzerLatency").textContent = `${durationMs}ms`;
+    $(latencyId).textContent = `${durationMs}ms`;
 
-    const list = $("editorProblemsList");
+    const list = $(listId);
     list.innerHTML = "";
     if (!diagnostics.length) {
       list.classList.add("hidden");
@@ -284,69 +350,222 @@
         <span class="problem-msg">${escapeHtml(d.message)}</span>
       `;
       li.addEventListener("click", () => {
-        if (monacoEditor) monacoEditor.revealPosition(d.startLine, d.startColumn);
+        if (editorInstance) editorInstance.revealPosition(d.startLine, d.startColumn);
       });
       list.appendChild(li);
     }
   }
 
-  function renderGuardDiagnostics(tr) {
+  function renderGuardLivePanels(tr) {
     const m = activeMachine();
     const list = $("transGuardDiag");
+    const detBox = $("transDeterminismBox");
+    const rustPrev = $("transGuardRustPreview");
+    const hintEl = $("transGuardHint");
     list.innerHTML = "";
+
     if (!m || !tr) {
       list.classList.add("hidden");
       return;
     }
+
     const guardVal = $("inpTransGuard").value;
     const evVal = $("inpTransEvent").value;
-    const res = RustyAnalyzer.analyzeGuardExpression(guardVal, m, { ...tr, event: evVal });
-    if (!res.diagnostics.length) {
+    const eventsByPascal = new Map(m.events.map((e) => [RustyContract.toPascalCase(e.name), e]));
+    const evDef = eventsByPascal.get(RustyContract.toPascalCase(evVal)) || null;
+
+    // Show concise variable & payload reference hint
+    const gVars = m.globals.map((g) => RustyContract.toSnakeCase(g.name));
+    const payHint = evDef && evDef.payloadType ? ` · payload: ${evDef.payloadType}` : "";
+    hintEl.textContent = gVars.length ? `Vars: ${gVars.join(", ")}${payHint}` : `No globals defined${payHint}`;
+
+    const vg = RustyGuardLang.validateGuard(guardVal, m, { ...tr, event: evVal });
+    if (!vg.diagnostics.length) {
       list.classList.add("hidden");
+    } else {
+      list.classList.remove("hidden");
+      for (const d of vg.diagnostics) {
+        const li = document.createElement("li");
+        li.className = `problem-row sev-${d.severity}`;
+        li.innerHTML = `
+          <span class="problem-loc">${escapeHtml(d.code)}</span>
+          <span class="problem-msg">${escapeHtml(d.message)}</span>
+        `;
+        list.appendChild(li);
+      }
+    }
+
+    rustPrev.textContent = vg.ast
+      ? `if ${RustyGuardLang.emitGuardRust(vg.ast, m, evDef)}`
+      : "Unconditional (always enabled when event matches)";
+
+    // Live mutual-exclusivity check against every sibling transition on the same `(SrcState, Event)`
+    const targetEvPascal = RustyContract.toPascalCase(evVal);
+    const siblings = m.transitions.filter(
+      (s) =>
+        s.id !== tr.id &&
+        (s.srcId === tr.srcId || s.srcName === tr.srcName) &&
+        RustyContract.toPascalCase(s.event) === targetEvPascal,
+    );
+
+    if (!vg.valid) {
+      detBox.className = "determinism-box warn";
+      detBox.innerHTML = "<strong>⚠ Exclusivity pending:</strong> Fix guard syntax/type errors above to run determinism proof.";
       return;
     }
-    list.classList.remove("hidden");
-    for (const d of res.diagnostics) {
-      const li = document.createElement("li");
-      li.className = `problem-row sev-${d.severity}`;
-      li.innerHTML = `
-        <span class="problem-loc">${escapeHtml(d.code)}</span>
-        <span class="problem-msg">${escapeHtml(d.message)}</span>
-      `;
-      list.appendChild(li);
+
+    if (siblings.length === 0) {
+      detBox.className = "determinism-box ok";
+      detBox.innerHTML = `<strong>✓ Mutually Exclusive (Deterministic):</strong> Only outgoing transition on <code>${escapeHtml(targetEvPascal)}</code> from <code>${escapeHtml(tr.srcName)}</code>.`;
+      return;
+    }
+
+    const overlaps = [];
+    const unknowns = [];
+    for (const sib of siblings) {
+      const check = RustyGuardLang.checkPairExclusivity(
+        guardVal,
+        sib.guard,
+        m,
+        evDef,
+        { ...tr, event: evVal },
+        sib,
+      );
+      if (check.status === "overlap") {
+        overlaps.push({ sib, ceText: RustyGuardLang.formatCounterexample(check.counterexample) });
+      } else if (check.status === "unknown") {
+        unknowns.push({ sib, reason: check.reason });
+      }
+    }
+
+    if (overlaps.length > 0) {
+      detBox.className = "determinism-box err";
+      detBox.innerHTML =
+        `<strong>✕ Non-Deterministic Guard Overlap!</strong> Multiple <code>${escapeHtml(targetEvPascal)}</code> transitions from <code>${escapeHtml(tr.srcName)}</code> can fire together:` +
+        overlaps
+          .map(
+            (o) =>
+              `<div>• Overlaps <strong>→ ${escapeHtml(o.sib.dstName)} (${escapeHtml(o.sib.name || o.sib.event)})</strong> when <code>${escapeHtml(o.ceText)}</code></div>`,
+          )
+          .join("");
+    } else if (unknowns.length > 0) {
+      detBox.className = "determinism-box warn";
+      detBox.innerHTML = `<strong>⚠ Exclusivity unverified:</strong> ${escapeHtml(unknowns[0].reason || "Non-linear expression")}`;
+    } else {
+      detBox.className = "determinism-box ok";
+      detBox.innerHTML = `<strong>✓ Proven Mutually Exclusive:</strong> Disjoint from all ${siblings.length} sibling <code>${escapeHtml(targetEvPascal)}</code> transition(s) on <code>${escapeHtml(tr.srcName)}</code>.`;
     }
   }
 
-  async function saveOrCommitActiveState() {
+  async function saveOrCommitActiveStateHook(doGitCommit = true) {
     const m = activeMachine();
     const st = selectedStateObj();
     if (!m || !st || !monacoEditor) return;
-    const code = monacoEditor.getValue();
+    if (state.stateHookTab === "transitions") return;
+
+    const hookBody = monacoEditor.getEditableBody();
+    if (state.stateHookTab === "entry") state.draftEntryByStateId.set(st.id, hookBody);
+    else state.draftExitByStateId.set(st.id, hookBody);
 
     const check = monacoEditor.runInstantAnalysis();
-    if (check && check.stats.errors > 0) {
+    if (doGitCommit && check && check.stats.errors > 0) {
       const proceed = window.confirm(
-        `Edit-time analyzer found ${check.stats.errors} error(s) in ${st.name}. Commit & Push anyway?`,
+        `Edit-time analyzer found ${check.stats.errors} error(s) in ${st.name}::${state.stateHookTab}. Commit & Push anyway?`,
       );
       if (!proceed) return;
     }
 
-    const deps = RustyAnalyzer.extractDependencies(code, m);
-    bridge.updateStateCodeAndDeps(
+    const entryCode = getLiveStateHookBody(st, "entry");
+    const exitCode = getLiveStateHookBody(st, "exit");
+    const updatedState = { ...st, entryCode, exitCode };
+    const composed = RustyContract.composeStateModuleRs(m, updatedState).code;
+    const deps = RustyAnalyzer.extractDependencies(`${entryCode}\n${exitCode}`, m);
+
+    bridge.updateStateHookAndCode(
       st.id,
-      code,
+      { entryCode, exitCode, codeCache: composed },
       deps.memberIds,
       RustyAnalyzer.serializeDepsSnapshot(deps.snapshot),
-      `Save Rust code & dependsOn for ${st.name}`,
+      `Save ${st.name} (${state.stateHookTab} hook & dependsOn)`,
     );
 
-    const eff = RustyContract.resolveStateGitLink(m, st);
-    if (eff.gitOwner && eff.gitRepo && state.gitStatus.hasGithubToken) {
-      await commitStatesToGitHub([{ ...st, code }]);
+    state.draftEntryByStateId.delete(st.id);
+    state.draftExitByStateId.delete(st.id);
+    state.editorLoadedHookKey = null;
+
+    const eff = RustyContract.resolveStateGitLink(m, updatedState);
+    if (doGitCommit && eff.gitOwner && eff.gitRepo && state.gitStatus.hasGithubToken) {
+      await commitStatesToGitHub([{ ...updatedState, code: composed }]);
     } else {
       state.dirtyStateIds.delete(st.id);
       $("codeDirtyHint").textContent = "Saved to WebGME";
-      toast(`Saved ${st.name} to WebGME`, "ok");
+      toast(`Saved ${st.name} ${state.stateHookTab} hook`, "ok");
+      renderAll();
+    }
+  }
+
+  function buildTempMachineWithTransitionOverride(m, tr, overrides) {
+    return {
+      ...m,
+      transitions: (m.transitions || []).map((t) => (t.id === tr.id ? { ...t, ...overrides } : t)),
+    };
+  }
+
+  async function saveOrCommitTransitionAction(doGitCommit = true) {
+    const m = activeMachine();
+    const tr = selectedTransitionObj();
+    if (!m || !tr || !transActionEditor) return;
+
+    const actionBody = transActionEditor.getEditableBody();
+    state.draftActionByTransId.set(tr.id, actionBody);
+
+    const check = transActionEditor.runInstantAnalysis();
+    if (doGitCommit && check && check.stats.errors > 0) {
+      const proceed = window.confirm(
+        `Edit-time analyzer found ${check.stats.errors} error(s) in transition action. Save & Push anyway?`,
+      );
+      if (!proceed) return;
+    }
+
+    const srcSt = m.states.find((s) => s.id === tr.srcId || s.name === tr.srcName);
+    const liveName = $("inpTransName").value.trim() || tr.name;
+    const liveEvent = $("inpTransEvent").value.trim() || tr.event;
+    const liveGuard = $("inpTransGuard").value.trim();
+    const liveReenter = Boolean($("inpTransReenter").checked);
+
+    const tempMachine = buildTempMachineWithTransitionOverride(m, tr, {
+      name: liveName,
+      event: liveEvent,
+      guard: liveGuard,
+      reenter: liveReenter,
+      action: actionBody,
+    });
+    const composedSrc = srcSt ? RustyContract.composeStateModuleRs(tempMachine, srcSt).code : "";
+    const deps = RustyAnalyzer.extractDependencies("", m, {
+      triggerEvent: liveEvent,
+      guardText: liveGuard,
+      actionText: actionBody,
+    });
+
+    bridge.updateTransitionAndDeps(
+      tr.id,
+      { name: liveName, event: liveEvent, guard: liveGuard, reenter: liveReenter, action: actionBody },
+      deps.memberIds,
+      RustyAnalyzer.serializeDepsSnapshot(deps.snapshot),
+      `Save Transition ${liveName} action & dependsOn`,
+      srcSt ? { stateId: srcSt.id, codeCache: composedSrc } : null,
+    );
+
+    state.draftActionByTransId.delete(tr.id);
+    state.dirtyTransIds.delete(tr.id);
+    state.transLoadedActionKey = null;
+
+    const eff = srcSt ? RustyContract.resolveStateGitLink(tempMachine, srcSt) : null;
+    if (doGitCommit && srcSt && eff && eff.gitOwner && eff.gitRepo && state.gitStatus.hasGithubToken) {
+      await commitStatesToGitHub([{ ...srcSt, code: composedSrc }]);
+    } else {
+      $("transActionDirtyHint").textContent = "Saved to WebGME";
+      toast(`Saved transition action (${liveName})`, "ok");
       renderAll();
     }
   }
@@ -366,6 +585,7 @@
       $("btnToggleRightPane").title = state.rightHidden ? "Show right Inspector panel" : "Hide right Inspector panel";
     }
     if (monacoEditor) setTimeout(() => monacoEditor.layout(), 180);
+    if (transActionEditor) setTimeout(() => transActionEditor.layout(), 180);
   }
 
   function applySectionCollapseStates() {
@@ -385,19 +605,54 @@
     applySectionCollapseStates();
 
     monacoEditor = new window.MonacoStateEditor($("monacoEditorHost"), {
-      onChange() {
+      onChange(bodyText) {
         const st = selectedStateObj();
-        if (!st) return;
+        if (!st || state.stateHookTab === "transitions") return;
+        if (state.stateHookTab === "entry") state.draftEntryByStateId.set(st.id, bodyText);
+        else state.draftExitByStateId.set(st.id, bodyText);
         state.dirtyStateIds.add(st.id);
         $("codeDirtyHint").textContent = "Unsaved edits";
         renderCanvas();
       },
       onDiagnostics(result) {
-        renderAnalyzerDiagnostics(result);
+        renderAnalyzerDiagnosticsFor("analyzerStatusBadge", "analyzerLatency", "editorProblemsList", monacoEditor, result);
       },
       onSaveShortcut() {
-        saveOrCommitActiveState();
+        const m = activeMachine();
+        const st = selectedStateObj();
+        const eff = m && st ? RustyContract.resolveStateGitLink(m, st) : null;
+        const doPush = Boolean(eff && eff.gitOwner && eff.gitRepo && state.gitStatus.hasGithubToken);
+        saveOrCommitActiveStateHook(doPush);
       },
+      onReadOnlyBlocked: notifyReadOnlyBlocked,
+    });
+
+    transActionEditor = new window.MonacoStateEditor($("transMonacoHost"), {
+      onChange(bodyText) {
+        const tr = selectedTransitionObj();
+        if (!tr) return;
+        state.draftActionByTransId.set(tr.id, bodyText);
+        state.dirtyTransIds.add(tr.id);
+        $("transActionDirtyHint").textContent = "Unsaved edits";
+      },
+      onDiagnostics(result) {
+        renderAnalyzerDiagnosticsFor(
+          "transActionBadge",
+          "transActionLatency",
+          "transActionProblemsList",
+          transActionEditor,
+          result,
+        );
+      },
+      onSaveShortcut() {
+        const m = activeMachine();
+        const tr = selectedTransitionObj();
+        const srcSt = m && tr ? m.states.find((s) => s.id === tr.srcId || s.name === tr.srcName) : null;
+        const eff = m && srcSt ? RustyContract.resolveStateGitLink(m, srcSt) : null;
+        const doPush = Boolean(eff && eff.gitOwner && eff.gitRepo && state.gitStatus.hasGithubToken);
+        saveOrCommitTransitionAction(doPush);
+      },
+      onReadOnlyBlocked: notifyReadOnlyBlocked,
     });
 
     try {
@@ -442,13 +697,16 @@
     }
 
     // Load Monaco AMD after WebGME Socket.IO connects
-    monacoEditor.init();
+    await monacoEditor.init();
+    await transActionEditor.init();
 
     bridge.onModelChange((machines) => {
       state.machines = machines;
       if (!state.activeMachineId || !machines.some((m) => m.id === state.activeMachineId)) {
         state.activeMachineId = machines[0] ? machines[0].id : null;
       }
+      state.editorLoadedHookKey = null;
+      state.transLoadedActionKey = null;
       rebuildSimulation(false);
       renderAll();
     });
@@ -596,7 +854,7 @@
     }
 
     banner.classList.remove("hidden");
-    banner.innerHTML = `<strong>⚠ Design Impact:</strong> ${imp.totalImpacted} item(s) need review / recheck: `;
+    banner.innerHTML = `<strong>⚠ Design Check:</strong> ${imp.totalImpacted} item(s) need attention: `;
     for (const item of imp.items.slice(0, 6)) {
       const chip = document.createElement("button");
       chip.type = "button";
@@ -608,9 +866,7 @@
         if (item.kind === "state") {
           selectStateForEditing(item.id);
         } else {
-          state.selectedType = "transition";
-          state.selectedId = item.id;
-          renderAll();
+          selectTransitionForEditing(item.id);
         }
       });
       banner.appendChild(chip);
@@ -662,16 +918,20 @@
       stateList.appendChild(li);
     }
 
-    // Globals (click edit icon to rename/retype -> tests design impact cleanly)
+    // Globals (with optional min/max bounds badge)
     for (const g of m.globals) {
       const li = document.createElement("li");
       li.className = "item-row";
+      const hasBounds = Boolean((g.minValue && g.minValue.trim()) || (g.maxValue && g.maxValue.trim()));
+      const boundsStr = hasBounds
+        ? ` [${g.minValue || "−∞"}..${g.maxValue || "+∞"}]`
+        : "";
       li.innerHTML = `
         <div class="item-main">
           <span class="item-name">${escapeHtml(g.name)}</span>
-          <span class="item-sub">${escapeHtml(g.rustType)} = ${escapeHtml(g.initialValue)}</span>
+          <span class="item-sub">${escapeHtml(g.rustType)} = ${escapeHtml(g.initialValue)}${escapeHtml(boundsStr)}</span>
         </div>
-        <button class="btn btn-xs btn-edit-global" title="Edit GlobalVar">✎</button>
+        <button class="btn btn-xs btn-edit-global" title="Edit GlobalVar & Bounds">✎</button>
         <button class="btn btn-xs btn-del-global" title="Delete GlobalVar">✕</button>
       `;
       li.querySelector(".btn-edit-global").addEventListener("click", (e) => {
@@ -689,6 +949,8 @@
               value: g.rustType,
             },
             { name: "initialValue", label: "Initial Value", value: g.initialValue },
+            { name: "minValue", label: "Min Domain Bound (optional — for guard proof)", placeholder: "e.g. 0.0", value: g.minValue || "" },
+            { name: "maxValue", label: "Max Domain Bound (optional — for guard proof)", placeholder: "e.g. 100.0", value: g.maxValue || "" },
           ],
           onConfirm(vals) {
             bridge.updateNodeAttributes(
@@ -697,6 +959,8 @@
                 name: vals.name.trim() || g.name,
                 rustType: vals.rustType,
                 initialValue: vals.initialValue.trim(),
+                minValue: (vals.minValue || "").trim(),
+                maxValue: (vals.maxValue || "").trim(),
               },
               `Update GlobalVar ${g.name}`,
             );
@@ -711,7 +975,7 @@
       globalList.appendChild(li);
     }
 
-    // Events (glyph + line swatch legend)
+    // Events
     const evStyles = StateMachineCanvas.buildEventStyles(m.events);
     const suggestions = $("eventNameSuggestions");
     suggestions.innerHTML = "";
@@ -853,6 +1117,134 @@
         .join("");
   }
 
+  function renderStateOutgoingTransitions(m, st) {
+    const hooks = RustyContract.resolveStateTransitionHooks(m, st);
+    $("stateTransCount").textContent = String(hooks.length);
+    const list = $("stateOutgoingList");
+    list.innerHTML = "";
+    if (hooks.length === 0) {
+      list.innerHTML = `<div class="empty-state" style="padding:14px;">No outgoing transitions from <strong>${escapeHtml(st.name)}</strong>. Use <strong>⇢ Edge</strong> to add one.</div>`;
+      return;
+    }
+
+    const detMap = state.impact && state.impact.determinism ? state.impact.determinism.byTransitionId : {};
+    for (const h of hooks) {
+      const tr = h.transition;
+      const trId = tr.id || h.trKey;
+      const det = detMap[trId];
+      const hasOverlap = det && det.status === "overlap";
+      const isSelf = tr.srcName === tr.dstName;
+      const routeSuffix = isSelf ? (tr.reenter ? "(self · re-enter)" : "(self · stay)") : "";
+
+      const card = document.createElement("div");
+      card.className = `outgoing-item${hasOverlap ? " overlap" : ""}`;
+      const guardTxt = tr.guard && tr.guard.trim() ? `[${tr.guard.trim()}]` : "(unconditional)";
+      const actionBadge = h.hasAction
+        ? `<span class="dep-chip dep-global">${escapeHtml(h.fnName)}</span>`
+        : `<span class="muted-mono">no action</span>`;
+      const detBadge = hasOverlap
+        ? `<span class="badge badge-err">✕ Overlap</span>`
+        : det && det.status === "unknown"
+          ? `<span class="badge badge-warn">? Unverified</span>`
+          : `<span class="badge badge-ok">✓ Exclusive</span>`;
+
+      card.innerHTML = `
+        <div class="outgoing-top">
+          <span class="outgoing-route">On <code>${escapeHtml(tr.event)}</code> → ${escapeHtml(tr.dstName)} <span class="muted">${escapeHtml(routeSuffix)}</span></span>
+          ${detBadge}
+        </div>
+        <div class="outgoing-meta">${escapeHtml(guardTxt)}</div>
+        <div class="btn-row" style="justify-content:space-between;">
+          <span class="muted-mono">${escapeHtml(tr.name || "")}</span>
+          ${actionBadge}
+        </div>
+      `;
+      card.addEventListener("click", () => {
+        selectTransitionForEditing(tr.id);
+      });
+      list.appendChild(card);
+    }
+  }
+
+  function loadStateHookIntoMonaco(m, st) {
+    if (!monacoEditor || state.stateHookTab === "transitions") return;
+    const hookKind = state.stateHookTab === "exit" ? "exit" : "entry";
+    const loadKey = `${st.id}:${hookKind}`;
+
+    const liveEntry = getLiveStateHookBody(st, "entry");
+    const liveExit = getLiveStateHookBody(st, "exit");
+    const tempSt = { ...st, entryCode: liveEntry, exitCode: liveExit };
+    const composed = RustyContract.composeStateModuleRs(m, tempSt, {
+      editableHook: hookKind,
+    });
+    const span = composed.hooks[hookKind];
+    const snakeFile = `${RustyContract.toSnakeCase(st.name)}.rs`;
+
+    $("stateHookSubtitle").textContent = `${span.fnName}(...) in ${snakeFile} · surrounding lines read-only`;
+    monacoEditor.setContext(m, st, { kind: hookKind, payloadType: "" });
+
+    if (state.editorLoadedHookKey !== loadKey) {
+      state.editorLoadedHookKey = loadKey;
+      monacoEditor.setContextualFile({
+        code: composed.code,
+        editableStartLine: span.startLine,
+        editableEndLine: span.endLine,
+        hookContext: { kind: hookKind, payloadType: "" },
+        stateId: st.id,
+        reveal: true,
+      });
+    }
+    setTimeout(() => monacoEditor.layout(), 20);
+  }
+
+  function loadTransitionActionIntoMonaco(m, tr) {
+    if (!transActionEditor || state.transSubTab !== "action") return;
+    const srcSt = m.states.find((s) => s.id === tr.srcId || s.name === tr.srcName);
+    if (!srcSt) return;
+
+    const liveAction = getLiveTransitionAction(tr);
+    const liveName = $("inpTransName").value.trim() || tr.name;
+    const liveEvent = $("inpTransEvent").value.trim() || tr.event;
+    const liveGuard = $("inpTransGuard").value.trim();
+    const liveReenter = Boolean($("inpTransReenter").checked);
+
+    const tempMachine = buildTempMachineWithTransitionOverride(m, tr, {
+      name: liveName,
+      event: liveEvent,
+      guard: liveGuard,
+      reenter: liveReenter,
+      action: liveAction,
+    });
+
+    const trKey = RustyContract.transitionKey(tr);
+    const composed = RustyContract.composeStateModuleRs(tempMachine, srcSt, {
+      editableHook: "transition",
+      includeTransitionKey: trKey,
+    });
+    const span = composed.hooks.transitions[trKey];
+    if (!span) return;
+
+    const snakeFile = `${RustyContract.toSnakeCase(srcSt.name)}.rs`;
+    $("transActionSubtitle").textContent = `${span.fnName}(...) in ${snakeFile} · surrounding lines read-only`;
+
+    const hookCtx = { kind: "transition", payloadType: span.payloadType || "" };
+    transActionEditor.setContext(tempMachine, srcSt, hookCtx);
+
+    const loadKey = `${tr.id}:${liveName}:${liveEvent}:${liveGuard}:${liveReenter}`;
+    if (state.transLoadedActionKey !== loadKey) {
+      state.transLoadedActionKey = loadKey;
+      transActionEditor.setContextualFile({
+        code: composed.code,
+        editableStartLine: span.startLine,
+        editableEndLine: span.endLine,
+        hookContext: hookCtx,
+        stateId: srcSt.id,
+        reveal: true,
+      });
+    }
+    setTimeout(() => transActionEditor.layout(), 20);
+  }
+
   function renderInspector() {
     const m = activeMachine();
     const st = selectedStateObj();
@@ -880,7 +1272,7 @@
 
       $("btnCommitState").classList.toggle("hidden", !isConnected);
       $("btnPullState").classList.toggle("hidden", !isConnected);
-      $("btnSaveCodeCache").textContent = isConnected ? "Save Local Draft" : "Save Code (⌘S)";
+      $("btnSaveCodeCache").textContent = isConnected ? "Save Local Draft" : "Save Hook (⌘S)";
 
       if (state.dirtyStateIds.has(st.id)) {
         setBadge("stateSyncBadge", "Modified (unsynced)", "badge-warn");
@@ -894,28 +1286,49 @@
 
       renderImpactBox($("stateImpactBox"), imp && imp.byStateId[st.id]);
       renderDependsOnChips($("stateDependsOnList"), st.dependsOn, m);
+      renderStateOutgoingTransitions(m, st);
 
-      if (monacoEditor) {
-        monacoEditor.setContext(m, st);
-        if (state.editorLoadedStateId !== st.id || !state.dirtyStateIds.has(st.id)) {
-          state.editorLoadedStateId = st.id;
-          monacoEditor.setValue(st.code || RustyContract.defaultStateCode(st.name, []), st.id);
-        }
-        setTimeout(() => monacoEditor.layout(), 20);
-      }
+      document.querySelectorAll("[data-state-hook]").forEach((btn) => {
+        btn.classList.toggle("active", btn.dataset.stateHook === state.stateHookTab);
+      });
+      $("stateHookCodePane").classList.toggle("hidden", state.stateHookTab === "transitions");
+      $("stateTransitionsPane").classList.toggle("hidden", state.stateHookTab !== "transitions");
+
+      loadStateHookIntoMonaco(m, st);
       $("codeDirtyHint").textContent = state.dirtyStateIds.has(st.id) ? "Unsaved edits" : "";
     }
 
     if (tr && m) {
-      $("transRouteHint").textContent = `${tr.srcName} → ${tr.dstName}`;
+      const isSelf = tr.srcId === tr.dstId || tr.srcName === tr.dstName;
+      $("transRouteHint").textContent = isSelf
+        ? `${tr.srcName} ↺ (self)`
+        : `${tr.srcName} → ${tr.dstName}`;
       $("inpTransName").value = tr.name;
       $("inpTransEvent").value = tr.event;
-      $("inpTransPriority").value = tr.priority;
+      $("transReenterRow").classList.toggle("hidden", !isSelf);
+      $("inpTransReenter").checked = Boolean(tr.reenter);
       $("inpTransGuard").value = tr.guard || "";
-      $("inpTransAction").value = tr.action || "";
+
       renderImpactBox($("transImpactBox"), imp && imp.byTransitionId[tr.id]);
       renderDependsOnChips($("transDependsOnList"), tr.dependsOn, m);
-      renderGuardDiagnostics(tr);
+      renderGuardLivePanels(tr);
+
+      document.querySelectorAll("[data-trans-tab]").forEach((btn) => {
+        btn.classList.toggle("active", btn.dataset.transTab === state.transSubTab);
+      });
+      $("tabTransGuard").classList.toggle("hidden", state.transSubTab !== "guard");
+      $("tabTransAction").classList.toggle("hidden", state.transSubTab !== "action");
+
+      const srcSt = m.states.find((s) => s.id === tr.srcId || s.name === tr.srcName);
+      const eff = srcSt ? RustyContract.resolveStateGitLink(m, srcSt) : null;
+      const isConnected = Boolean(eff && eff.gitOwner && eff.gitRepo);
+      $("btnCommitTransAction").classList.toggle("hidden", !isConnected);
+      $("btnSaveTransAction").textContent = isConnected ? "Save Local Draft" : "Save Action (⌘S)";
+      $("transActionDirtyHint").textContent = state.dirtyTransIds.has(tr.id) ? "Unsaved edits" : "";
+
+      if (state.transSubTab === "action") {
+        loadTransitionActionIntoMonaco(m, tr);
+      }
     }
   }
 
@@ -1064,7 +1477,7 @@
   function dispatchSimEvent(eventName, payload) {
     if (!state.sim) rebuildSimulation(true);
     const { entry } = state.sim.dispatch(eventName, payload);
-    state.simLastTransitionId = entry.fromState !== entry.toState ? entry.transitionId : null;
+    state.simLastTransitionId = entry.transitionId || null;
     renderCanvas();
     renderSimulator();
   }
@@ -1111,19 +1524,49 @@
         toast(`Path ${eff.gitPath} is a directory, expected file`, "warn");
         return;
       }
+
+      const parsed = RustyContract.parseStateModuleRs(file.content);
+      const hooks = RustyContract.resolveStateTransitionHooks(m, st);
+
+      bridge.runTransaction(`Pull ${eff.gitPath} from GitHub`, () => {
+        bridge.client.setAttribute(st.id, "entryCode", parsed.entryCode || "");
+        bridge.client.setAttribute(st.id, "exitCode", parsed.exitCode || "");
+        bridge.client.setAttribute(st.id, "codeCache", file.content);
+        const deps = RustyAnalyzer.extractDependencies(`${parsed.entryCode}\n${parsed.exitCode}`, m);
+        bridge._applyDepsInsideTx(
+          st.id,
+          deps.memberIds,
+          RustyAnalyzer.serializeDepsSnapshot(deps.snapshot),
+        );
+
+        for (const h of hooks) {
+          if (Object.prototype.hasOwnProperty.call(parsed.actionsByFnName, h.fnName)) {
+            const tr = h.transition;
+            const act = parsed.actionsByFnName[h.fnName];
+            bridge.client.setAttribute(tr.id, "action", act);
+            const tDeps = RustyAnalyzer.extractDependencies("", m, {
+              triggerEvent: tr.event,
+              guardText: tr.guard || "",
+              actionText: act,
+            });
+            bridge._applyDepsInsideTx(
+              tr.id,
+              tDeps.memberIds,
+              RustyAnalyzer.serializeDepsSnapshot(tDeps.snapshot),
+            );
+            state.draftActionByTransId.delete(tr.id);
+            state.dirtyTransIds.delete(tr.id);
+          }
+        }
+      });
+
       state.fetchedStateIds.add(st.id);
       state.dirtyStateIds.delete(st.id);
-      const deps = RustyAnalyzer.extractDependencies(file.content, m);
-      bridge.updateStateCodeAndDeps(
-        st.id,
-        file.content,
-        deps.memberIds,
-        RustyAnalyzer.serializeDepsSnapshot(deps.snapshot),
-        `Pull ${eff.gitPath} from GitHub`,
-      );
-      if (monacoEditor && state.selectedId === st.id) {
-        monacoEditor.setValue(file.content, st.id);
-      }
+      state.draftEntryByStateId.delete(st.id);
+      state.draftExitByStateId.delete(st.id);
+      state.editorLoadedHookKey = null;
+      state.transLoadedActionKey = null;
+
       if (statusEl) statusEl.textContent = "Loaded from GitHub";
       toast(`Fetched ${eff.gitPath} from ${eff.gitOwner}/${eff.gitRepo}`, "ok");
     } catch (err) {
@@ -1151,9 +1594,10 @@
 
     const changes = statesToCommit.map((st) => {
       const eff = RustyContract.resolveStateGitLink(m, st);
+      const composed = RustyContract.composeStateModuleRs(m, st).code;
       return {
         path: eff.gitPath,
-        content: st.code || RustyContract.defaultStateCode(st.name, []),
+        content: st.code && st.code.includes("// @rusty:hook") ? st.code : composed,
         mode: "100644",
       };
     });
@@ -1317,6 +1761,24 @@
       });
     });
 
+    // State Hook Sub-Tabs (Entry / Exit / Transitions)
+    document.querySelectorAll("[data-state-hook]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        state.stateHookTab = btn.dataset.stateHook;
+        state.editorLoadedHookKey = null;
+        renderInspector();
+      });
+    });
+
+    // Transition Sub-Tabs (Guard / Action)
+    document.querySelectorAll("[data-trans-tab]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        state.transSubTab = btn.dataset.transTab;
+        state.transLoadedActionKey = null;
+        renderInspector();
+      });
+    });
+
     // Side panel toggles & sidebar section collapse toggles
     $("btnToggleLeftPane").addEventListener("click", () => togglePane("left"));
     $("btnToggleRightPane").addEventListener("click", () => togglePane("right"));
@@ -1336,6 +1798,8 @@
       state.activeMachineId = e.target.value;
       state.selectedType = null;
       state.selectedId = null;
+      state.editorLoadedHookKey = null;
+      state.transLoadedActionKey = null;
       rebuildSimulation(true);
       renderAll();
     });
@@ -1376,7 +1840,7 @@
       });
     });
 
-    // Sidebar Add buttons (modal-driven with clean type pickers)
+    // Sidebar Add buttons
     $("btnAddState").addEventListener("click", () => {
       const m = activeMachine();
       if (!m) return;
@@ -1405,8 +1869,7 @@
             color: vals.color || "#38bdf8",
             position: { x: 120 + (idx % 3) * 230, y: 100 + Math.floor(idx / 3) * 140 },
           });
-          state.selectedType = "state";
-          state.selectedId = id;
+          selectStateForEditing(id);
         },
       });
     });
@@ -1427,6 +1890,8 @@
             value: "u32",
           },
           { name: "initialValue", label: "Initial Value", value: "0" },
+          { name: "minValue", label: "Min Domain Bound (optional)", placeholder: "e.g. 0", value: "" },
+          { name: "maxValue", label: "Max Domain Bound (optional)", placeholder: "e.g. 100", value: "" },
         ],
         onConfirm(vals) {
           const name = (vals.name || "").trim();
@@ -1435,6 +1900,8 @@
             name,
             rustType: vals.rustType || "i32",
             initialValue: (vals.initialValue || "0").trim(),
+            minValue: (vals.minValue || "").trim(),
+            maxValue: (vals.maxValue || "").trim(),
           });
         },
       });
@@ -1507,40 +1974,19 @@
       toast(`Saved ${st.name} design attributes`, "ok");
     });
 
-    $("btnExpandEditor").addEventListener("click", () => {
+    const toggleExpand = () => {
       const ws = $("workspaceGrid");
       const expanded = ws.classList.toggle("editor-expanded");
       $("btnExpandEditor").textContent = expanded ? "⇒ Narrow" : "⇔ Wide";
+      $("btnExpandTransEditor").textContent = expanded ? "⇒ Narrow" : "⇔ Wide";
       if (monacoEditor) setTimeout(() => monacoEditor.layout(), 180);
-    });
+      if (transActionEditor) setTimeout(() => transActionEditor.layout(), 180);
+    };
+    $("btnExpandEditor").addEventListener("click", toggleExpand);
+    $("btnExpandTransEditor").addEventListener("click", toggleExpand);
 
-    $("btnSaveCodeCache").addEventListener("click", () => {
-      const m = activeMachine();
-      const st = selectedStateObj();
-      if (!m || !st || !monacoEditor) return;
-      const code = monacoEditor.getValue();
-      const deps = RustyAnalyzer.extractDependencies(code, m);
-      bridge.updateStateCodeAndDeps(
-        st.id,
-        code,
-        deps.memberIds,
-        RustyAnalyzer.serializeDepsSnapshot(deps.snapshot),
-        `Save draft & dependsOn for ${st.name}`,
-      );
-      state.dirtyStateIds.delete(st.id);
-      $("codeDirtyHint").textContent = "Saved to WebGME";
-      toast(`Saved draft & dependencies for ${st.name}`, "ok");
-    });
-
-    $("btnResetStateTemplate").addEventListener("click", () => {
-      const m = activeMachine();
-      const st = selectedStateObj();
-      if (!m || !st || !monacoEditor) return;
-      const outgoing = m.transitions.filter((t) => t.srcId === st.id);
-      monacoEditor.setValue(RustyContract.defaultStateCode(st.name, outgoing), st.id);
-      state.dirtyStateIds.add(st.id);
-      $("codeDirtyHint").textContent = "Template inserted (unsaved)";
-    });
+    $("btnSaveCodeCache").addEventListener("click", () => saveOrCommitActiveStateHook(false));
+    $("btnCommitState").addEventListener("click", () => saveOrCommitActiveStateHook(true));
 
     $("btnDeleteState").addEventListener("click", () => {
       const st = selectedStateObj();
@@ -1556,40 +2002,51 @@
       if (st) pullStateFromGitHub(st);
     });
 
-    $("btnCommitState").addEventListener("click", () => {
-      saveOrCommitActiveState();
-    });
-
-    // Transition Inspector actions (live guard validation + dependsOn sync)
+    // Transition Inspector actions (live guard validation + exclusivity check + dependsOn sync)
     $("inpTransGuard").addEventListener("input", () => {
-      renderGuardDiagnostics(selectedTransitionObj());
+      renderGuardLivePanels(selectedTransitionObj());
     });
     $("inpTransEvent").addEventListener("input", () => {
-      renderGuardDiagnostics(selectedTransitionObj());
+      renderGuardLivePanels(selectedTransitionObj());
     });
 
     $("btnSaveTransition").addEventListener("click", () => {
       const m = activeMachine();
       const tr = selectedTransitionObj();
       if (!m || !tr) return;
+      const name = $("inpTransName").value.trim() || tr.name;
       const event = $("inpTransEvent").value.trim() || "Tick";
       const guard = $("inpTransGuard").value.trim();
-      const deps = RustyAnalyzer.extractDependencies(guard, m, { triggerEvent: event });
+      const reenter = Boolean($("inpTransReenter").checked);
+      const currentAction = getLiveTransitionAction(tr);
+      const srcSt = m.states.find((s) => s.id === tr.srcId || s.name === tr.srcName);
+      const tempMachine = buildTempMachineWithTransitionOverride(m, tr, {
+        name,
+        event,
+        guard,
+        reenter,
+        action: currentAction,
+      });
+      const recomposedSrc = srcSt ? RustyContract.composeStateModuleRs(tempMachine, srcSt).code : "";
+      const deps = RustyAnalyzer.extractDependencies("", m, {
+        triggerEvent: event,
+        guardText: guard,
+        actionText: currentAction,
+      });
       bridge.updateTransitionAndDeps(
         tr.id,
-        {
-          name: $("inpTransName").value.trim() || tr.name,
-          event,
-          priority: Number($("inpTransPriority").value || 1),
-          guard,
-          action: $("inpTransAction").value.trim(),
-        },
+        { name, event, guard, reenter },
         deps.memberIds,
         RustyAnalyzer.serializeDepsSnapshot(deps.snapshot),
-        `Update Transition ${tr.name} & dependsOn`,
+        `Update Transition ${name} & dependsOn`,
+        srcSt ? { stateId: srcSt.id, codeCache: recomposedSrc } : null,
       );
-      toast("Saved transition & guard dependencies", "ok");
+      state.transLoadedActionKey = null;
+      toast("Saved transition guard & metadata", "ok");
     });
+
+    $("btnSaveTransAction").addEventListener("click", () => saveOrCommitTransitionAction(false));
+    $("btnCommitTransAction").addEventListener("click", () => saveOrCommitTransitionAction(true));
 
     $("btnDeleteTransition").addEventListener("click", () => {
       const tr = selectedTransitionObj();
@@ -1872,7 +2329,13 @@
       state.selectedType = null;
       state.selectedId = null;
       state.dirtyStateIds.clear();
+      state.dirtyTransIds.clear();
+      state.draftEntryByStateId.clear();
+      state.draftExitByStateId.clear();
+      state.draftActionByTransId.clear();
       state.fetchedStateIds.clear();
+      state.editorLoadedHookKey = null;
+      state.transLoadedActionKey = null;
       $("repoModal").classList.add("hidden");
       toast(
         `Connected & imported ${model.name} (${summary.states} states, ${summary.transitions} transitions)`,

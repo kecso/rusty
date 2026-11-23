@@ -1,95 +1,71 @@
-# Demo Showcase: SmartThermostat (Full Reference)
+# Showcase: `SmartThermostat` (HVAC Controller)
 
-**`SmartThermostat`** (`examples/smart-thermostat/`) is a complete pre-built demo model showcasing floating-point physics, payload events, guarded transitions, self-emitted alerts, and native Rust parity.
+**`SmartThermostat`** (`examples/smart-thermostat/`) is a rich 5-state pre-seeded example in `RustySeed.webgmex` illustrating pure `Entry` / `Exit` hooks, non-reentrant self-transition physics actions (`tr_heat_step`, `tr_cool_step`, `tr_drift`), explicit per-state event acceptance, **`f64` payload events**, bounded `GlobalVar` domains, and **formally proven mutually exclusive guards** across **26 transitions**.
 
 ![SmartThermostat showcase in fixed layered layout with native parity](/images/demo-smart-thermostat.gif)
 
-::: tip Want to build your own machine step by step?
+::: tip Want to build step by step first?
 Start with [Tutorial 1: Build a Simple Counter](./00-build-a-counter.md) to walk through creating states, globals, events, and guards from scratch.
 :::
 
-## What `SmartThermostat` Demonstrates
+## Architecture at a Glance
 
-- **Rich `Globals` types**: `f64` (`current_temp_c`, `target_temp_c`, `hysteresis_c`, `ambient_temp_c`, `energy_wh`), `u32` (`cycle_ticks`, `max_cycle_ticks`), `i32` (`fault_code`), `bool` (`eco_mode`), and `String` (`status_note`).
-- **Payload Events**: `Event::SetTarget(f64)` and `Event::SetAmbient(f64)` with `f64::clamp(...)`.
-- **Actual Computation**: thermal drift `(ambient - current) * 0.125`, active power & Watt-hour integration (`energy_wh`), `if/else` expression switching, and `.round()` formatting.
-- **Self-Emitted Events**: `Outcome::Emit(Event::OverheatAlert)` raised internally by `Heating` or `Cooling` when `cycle_ticks >= max_cycle_ticks` (or `current_temp_c >= 40.0`).
-- **Safety State Machine Patterns**: mandatory 3-tick `Cooldown` rest state and latched `SafeLockout` requiring `Reset`.
+- **5 States**: `Standby` *(initial)*, `Heating`, `Cooling`, `Cooldown`, `SafeLockout`.
+- **10 Typed Globals** *(many with `minValue`/`maxValue` domain bounds)*:
+  `current_temp_c: f64` (`21.0`), `target_temp_c: f64` (`22.0`, bounds `10.0..32.0`), `hysteresis_c: f64` (`1.0`, bounds `0.0..5.0`), `ambient_temp_c: f64` (`15.0`, bounds `-20.0..50.0`), `energy_wh: f64` (`0.0`, min `0.0`), `cycle_ticks: u32` (`0`), `max_cycle_ticks: u32` (`10`, min `1`), `fault_code: i32` (`0`), `eco_mode: bool` (`false`), `status_note: String`.
+- **6 Events (Unit + `f64` Payload)**: `Tick`, `SetTarget(f64)`, `SetAmbient(f64)`, `ToggleEco`, `EmergencyShutoff`, `Reset`.
+- **No Global Event Handlers**: Notice how `SetTarget`, `SetAmbient`, and `ToggleEco` are explicitly connected as self-transitions (`reenter = false`) on `Standby`, `Heating`, and `Cooling`—and omitted from `SafeLockout` so configuration commands cannot alter a locked-out controller.
 
-## State Topology
-
-```
-                     Tick [temp < target - hyst]
-               ┌──────────────────────────────────▶ ┌─────────┐
-               │                                    │ Heating │──┐
-          ┌────┴────┐   Tick [temp >= target+hyst]  └─────────┘  │ OverheatAlert
-          │ Standby │ ◀──────────────────────────────┘    │      │ (self-emitted)
-          │ (INIT)  │                                     │      ▼
-          └────┬────┘                                     │  ┌──────────┐
-               │   Tick [temp > target + hyst]            │  │ Cooldown │
-               ├──────────────────────────────────▶ ┌─────────┐  └────┬─────┘
-               │                                    │ Cooling │───────┘
-               │                                    └─────────┘   Tick [cycle_ticks == 0]
-               │                                         ▲             │
-               │ EmergencyShutoff / overtemp             └─────────────┴──▶ Standby
-               ▼
-         ┌─────────────┐   Reset
-         │ SafeLockout │ ──────────▶ Standby
-         └─────────────┘
+```text
+                       Tick [current_temp_c >= 45.0]
+               +-------------------------------------------+
+               |                                           v
+  +---------+  | Tick [.. < target - hyst]  +---------+  EmergencyShutoff  +-------------+
+  | Standby |------------------------------>| Heating |------------------->| SafeLockout |
+  |         |<------------------------------|         |                    |             |
+  +---------+  Tick [.. >= target + hyst]   +---------+                    +-------------+
+     |   ^                                       |                                 |
+     |   |                                       | Tick [temp>=40 || cycle>=max]   | Reset
+     |   | Tick [.. <= target - hyst]            v                                 |
+     |   |     +---------+  Tick [temp>=40] +----------+                           |
+     |   +-----| Cooling |----------------->| Cooldown |<--------------------------+
+     +-------->|         |                  | (3 ticks)| (returned to Standby via Reset)
+       Tick    +---------+                  +----------+
 ```
 
-## Step 1: Switch to `SmartThermostat`
+## Step 1: Switch Machine & Explore Compact Badges
 
-1. In Rusty Studio's top bar, change the **Machine** dropdown from `BlinkyController` to **`SmartThermostat`**.
-2. Notice the **Git Repository** bar shows `Not connected (local draft)`. Once you click **`Connect Git Repository…`** once to connect `<your-username>/rusty@dev` (`examples/smart-thermostat`), states inherit `<dir>/src/states/<state>.rs` automatically.
-3. Hover any transition badge (`B ⚑`, `F`, `G`) on the **Diagram** to inspect its full Event + `[Guard]` tooltip, then switch the right pane to **Simulator**. Initial state is **`Standby`** with:
-   - `current_temp_c = 21`
-   - `target_temp_c = 22`
-   - `hysteresis_c = 1`
-   - `ambient_temp_c = 15` (chilly outside!)
+1. In the top **Machine** selector, switch from `BlinkyController` to **`SmartThermostat`**.
+2. Notice the **Fixed Layered Layout** (`⇄ LR` / `⇄ TB`) arranges all 5 states cleanly with horizontally fanned self-loops.
+3. Enable **`🏷 Badges`** and inspect the left **`Events`** legend (`A = Tick`, `B = SetTarget`, `C = SetAmbient`, `D = ToggleEco`, `E = EmergencyShutoff`, `F = Reset`), or hover any edge badge for exact guard & hook details.
 
-## Step 2: Observe Passive Drift & Automatic Heating
+## Step 2: Watch Entry Hooks + Self-Transition Physics
 
-1. Click **`⏭ Step Tick`**.
-   - `Standby` computes passive heat loss: `(15 - 21) * 0.125 = -0.75`, so `current_temp_c` drops to **`20.25`**.
-   - Since `20.25 < 22.0 - 1.0`, `Standby` transitions to **`Heating`**!
-2. Click **`⏭ Step Tick`** three times in `Heating`:
-   - Each tick adds `power_c = 1.75` minus ambient heat loss (`(current - ambient) * 0.125`), integrates `+25 Wh` into `energy_wh` (`25 -> 50 -> 75 Wh`), and increments `cycle_ticks`.
-   - On the 3rd heating tick (`23.14°C >= 23.0°C`), `Heating` returns to **`Standby`**.
+1. Open **`Simulator`** and inspect **`Globals`**: `current_temp_c = 21.0`, `target_temp_c = 22.0`, `hysteresis_c = 1.0`.
+2. Click **`⏭ Step Tick`** *(Step 1)*: inside deadband `[21.0, 23.0]`, **`Standby ↺ Standby` (`drift`)** fires (`tr_drift` cools passively from `21.0` to `20.25 C`).
+3. Click **`⏭ Step Tick`** *(Step 2)*: now `20.25 < 21.0`, so **`Standby → Heating` (`start_heat`)** runs `Heating::on_enter` (`cycle_ticks = 0`, `status_note = "Heating"`).
+4. Click **`⏭ Step Tick`** 3 more times *(Steps 3–5)*: **`Heating ↺ Heating` (`heat_step`)** heats the room (`21.34 → 22.30 → 23.14 C`, `energy_wh = 75 Wh`), incrementing `cycle_ticks` without re-running `on_enter`.
+5. Click **`⏭ Step Tick`** *(Step 6)*: at `23.14 >= 23.0`, **`Heating → Standby` (`done_heat`)** enters **`Standby`** and resets `cycle_ticks = 0`.
 
-## Step 3: Inject Payload Events & Eco Mode
+## Step 3: Dispatch Typed `f64` Payloads (`SetTarget` & `SetAmbient`)
 
-1. Click **`SetTarget(f64)`** and enter `28` (raises setpoint to `28°C`).
-2. Click **`ToggleEco`** to set `eco_mode = true` and widen `hysteresis_c` to `1.5°C`.
-3. Step **`Tick`** into `Heating`: notice each tick now draws **`15 Wh`** instead of `25 Wh` and heats at `+1.0°C` per tick.
+1. Under **Dispatch Event**, find **`SetTarget`** (with payload input `f64`):
+   - Enter **`18.5`** and click **`SetTarget`**.
+   - Look at `tr_set_target(globals, payload: f64)` in **`Action Hook`**: `globals.target_temp_c = payload.clamp(10.0, 32.0);` clamps safely without resetting `cycle_ticks` (`reenter = false`).
+2. Step **`Tick`** once — since `current_temp_c > 18.5 + 1.0`, `SmartThermostat` enters **`Cooling`** (`cool_step` draws `20 Wh/tick` or `12 Wh/tick` in `eco_mode`).
+3. Try raising `ambient_temp_c` using **`SetAmbient` = `38.0`** and stepping `Cooling` to observe realistic thermal load against external heat gain.
 
-## Step 4: Trigger Self-Emitted `Outcome::Emit(Event::OverheatAlert)`
+## Step 4: Duty-Limit Cooldown & Explicit Lockout Semantics
 
-Look at `examples/smart-thermostat/src/states/heating.rs`:
+1. In Live **Globals**, click `max_cycle_ticks` and change `10` → **`3`** (`Heating` duty limit).
+2. Set `target_temp_c = 30.0`, **`SetAmbient = 10.0`**, dispatch **`Tick`** into **`Heating`**, then click **`⏭ Step Tick`** cleanly:
+   - On tick 3 (`cycle_ticks == 3`), **`Heating → Cooldown` (`overheat`)** satisfies `current_temp_c >= 40.0 || cycle_ticks >= max_cycle_ticks`, sets `globals.fault_code = 201;`, and enters **`Cooldown`** (`cycle_ticks = 3`).
+   - Three subsequent `Tick`s count down `cycle_ticks` (`3 -> 2 -> 1 -> 0`) via `tr_cool_wait`, and **`Cooldown → Standby` (`recovered`)** clears `fault_code = 0`.
+3. Dispatch **`EmergencyShutoff`** to jump from any active state to **`SafeLockout`** (`fault_code = 999`). Notice `SetTarget` is ignored in `SafeLockout` until **`Reset`** returns the controller to `Standby`.
 
-```rust
-if globals.current_temp_c >= 40.0 || globals.cycle_ticks >= globals.max_cycle_ticks {
-    globals.fault_code = 201;
-    Outcome::Emit(Event::OverheatAlert)
-}
-```
+## Step 5: Verify Mutual Exclusivity & Native Rust Parity
 
-1. In **Live Globals**, click `max_cycle_ticks` and set it to `3` (or keep ticking with `SetTarget(32)`).
-2. On the 3rd tick in `Heating`, `Heating` emits `Event::OverheatAlert` internally!
-3. The execution trace logs `emitted Event::OverheatAlert` and transitions straight into **`Cooldown`** with `cycle_ticks = 3`.
-4. Step **`Tick`** 3 times to watch `Cooldown` count down (`3 -> 2 -> 1 -> Standby`) and clear `fault_code = 0`.
-
-## Step 5: Test `Cooling`, `EmergencyShutoff`, and Native Parity
-
-1. Click **`SetAmbient(f64)`** → `36`, then **`SetTarget(f64)`** → `20`, and click **`▶ Auto-Tick`** to watch `Standby` drift upward and enter **`Cooling`**.
-2. Click **`EmergencyShutoff`** at any time to verify immediate transition to **`SafeLockout`** (`fault_code = 999`, `status_note = "LOCKED OUT - Reset required"`), then click **`Reset`**.
-3. Click **`⚙ Verify in Native Rust`** — `/routers/rustsim/run` compiles `SmartThermostat` with `cargo` and confirms the native Rust binary produces the exact same final state and floating-point values!
-
-## Step 6: Modify Computation Live in Monaco
-
-1. Select **`Heating`** and switch the right pane back to **Inspector & Rust**.
-2. In Monaco, change normal heating wattage from `25.0` to `30.0`:
-   ```rust
-   let watts = if globals.eco_mode { 15.0 } else { 30.0 };
-   ```
-3. Click **Save Local Draft** (or press **`⌘S`** to save & push directly to your fork's `dev` branch once connected in [Tutorial 3](./04-github-sync-dev.md)), then click **✓ Verify with rustc** and re-run the **Simulator** to see `energy_wh` increase by `30 Wh` per tick!
+1. Click any outgoing `Tick` edge on `Standby`, `Heating`, or `Cooling` and open **`Guard & Exclusivity`**: every sibling pair is **formally proven mutually exclusive** (leveraging `hysteresis_c >= 0.0` from `GlobalVar.minValue = "0.0"`).
+2. Click **`⚙ Verify in Native Rust`** under **Execution Trace** and confirm:
+   `✓ Native Rust matches!`.
+3. Open **`Heating`** (`Action Hook` for `tr_heat_step` in `examples/smart-thermostat/src/states/heating.rs`), update `let watts = if globals.eco_mode { 15.0 } else { 30.0 };`, save (`⌘S`), verify with **`✓ Verify with rustc`**, and re-run **Simulator** to observe `energy_wh` jump by `30 Wh` per tick.

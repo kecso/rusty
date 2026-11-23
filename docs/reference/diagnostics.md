@@ -1,30 +1,44 @@
-# Reference: Edit-Time Diagnostics (`RustyAnalyzer`)
+# Reference: Edit-Time, Guard & Design-Impact Diagnostics
 
-`src/common/rustAnalyzer.js` executes synchronously in the browser on every edit (55ms debounce) and maps directly onto Monaco Editor markers.
+Rusty runs three instant (`< 1 ms`) static passes in the browser alongside native `cargo check`.
 
-## Diagnostic Codes
+## 1. Pure Guard Expression Codes (`src/common/rustGuardLang.js`)
 
 | Code | Severity | Meaning |
 | --- | --- | --- |
-| `RUSTY_E001` | Error | Reference to an undefined `globals.<field>` (includes Levenshtein typo suggestion) |
-| `RUSTY_E002` | Error | Compound operator (`+=`, `-=`, `*=`, `/=`) applied to a non-numeric global (`bool` or `String`) |
-| `RUSTY_E003` | Error | Literal type mismatch in `globals.<field> = <literal>` (including negative literal assigned to `u32`/`u64`/`usize`) |
-| `RUSTY_E010` | Error | Unknown `Event::<Variant>` not defined as an `EventDef` in WebGME (includes typo suggestion) |
-| `RUSTY_E011` | Error | Event payload arity mismatch (unit event given `(...)` or payload event missing `(...)`) |
-| `RUSTY_E012` | Error | Literal payload type mismatch inside `Outcome::Emit(Event::<Variant>(...))` |
-| `RUSTY_W013` | Warning | Self-emitted `Outcome::Emit(Event::...)` is not handled by `on_event` or an outgoing WebGME `Transition` on the active state |
-| `RUSTY_W014` | Warning | `emit!(...)` macro used instead of the `#![no_std]` contract `Outcome::Emit(Event::...)` |
-| `RUSTY_E020` | Error | Unknown `StateId::<Name>` not defined as a `State` in WebGME (includes typo suggestion) |
-| `RUSTY_W021` | Warning | `Outcome::Transition(StateId::<Name>)` has no matching WebGME `Transition` edge from the active state |
-| `RUSTY_E030` | Error | Missing required `pub fn on_event(globals: &mut Globals, event: &Event) -> Outcome` |
-| `RUSTY_W031` | Warning | Missing `pub fn on_enter(...)` or `pub fn on_exit(...)` lifecycle function |
-| `RUSTY_E032` | Error | Unbalanced delimiter (`{`, `}`, `(`, `)`, `[`, `]`) |
-| `DESIGN_GLOBAL_RENAMED` | Error | Referenced `GlobalVar` tracked in `dependsOn` was renamed in the design |
-| `DESIGN_GLOBAL_REMOVED` | Error | Referenced `GlobalVar` tracked in `dependsOn` was removed from the design |
-| `DESIGN_TYPE_CHANGED` | Warning | Type (`rustType`) of a referenced `GlobalVar` changed — review & recheck state code or guard |
-| `DESIGN_EVENT_RENAMED` | Error | Referenced `EventDef` tracked in `dependsOn` was renamed |
-| `DESIGN_EVENT_REMOVED` | Error | Referenced `EventDef` tracked in `dependsOn` was removed |
-| `DESIGN_PAYLOAD_CHANGED` | Warning | Payload type of a referenced `EventDef` changed |
-| `DESIGN_STATE_RENAMED` | Error | Referenced target `State` tracked in `dependsOn` was renamed |
-| `DESIGN_STATE_REMOVED` | Error | Referenced target `State` tracked in `dependsOn` was deleted |
-| `DESIGN_DEPENDENCY_MISSING` | Warning | Dangling member inside WebGME `dependsOn` Set requires code review |
+| `RUSTY_G001` | Error | Guard lexer/parser syntax error (unterminated string, bad numeric literal, unexpected token, missing operand) |
+| `RUSTY_G002` | Error | Forbidden imperative construct in guard (`=`, `+=`, `-=`, `*=`, `/=`, `::`, `{}`, `;`, `/`, `%`, `?`, `&`, `\|`) — guards must stay pure expressions |
+| `RUSTY_G005` | Error | Top-level guard expression does not evaluate to `bool` |
+| `RUSTY_G006` | Error | `payload` referenced in guard, but the trigger event carries no payload |
+| `RUSTY_E001` | Error | Unknown `GlobalVar` referenced inside a guard (with closest-match quick fix) |
+| `RUSTY_E003` | Error | Type mismatch inside guard arithmetic, comparison, or boolean operator |
+| `RUSTY_E010` | Error | Transition trigger `event` is not defined as an `EventDef` in WebGME |
+| `RUSTY_E032` | Error | Unmatched closing `)` or missing parenthesis in guard |
+
+## 2. State & Transition Hook Codes (`src/common/rustAnalyzer.js`)
+
+| Code | Severity | Meaning |
+| --- | --- | --- |
+| `RUSTY_E001` | Error | Unknown `globals.<field>` — not a WebGME `GlobalVar` (includes Levenshtein quick fix) |
+| `RUSTY_E002` | Error | Arithmetic compound operator (`+=`, `-=`, `*=`, `/=`) applied to non-numeric `bool` or `String` global |
+| `RUSTY_E003` | Error | Type mismatch (e.g., negative literal assigned to `u32`, string assigned to numeric type, or float literal assigned to integer) |
+| `RUSTY_E032` | Error | Unbalanced delimiter (`{ }`, `( )`, `[ ]`) across hook body or state module |
+| `RUSTY_E040` | Error | Forbidden control-flow reference (`StateId::*`, `Event::*`, or transition control enums) inside hook code — transitions and events belong strictly to the design |
+| `RUSTY_E041` | Error | Invalid `payload` reference inside `on_enter`, `on_exit`, or a unit-event transition `tr_*` hook |
+| `RUSTY_W031` | Warning | Missing `pub fn on_enter(globals: &mut Globals)` or `pub fn on_exit(globals: &mut Globals)` in composed state file |
+
+## 3. Design-Change Impact & Exclusivity Codes (`computeDesignImpact`)
+
+Triggered whenever a WebGME `GlobalVar` / `EventDef` / guard changes and affects existing code, `dependsOn` Sets, or sibling transition determinism:
+
+| Code | Severity | Meaning |
+| --- | --- | --- |
+| `DESIGN_GUARD_OVERLAP` | Error | Two sibling transitions on the same `(State, Event)` can fire simultaneously; reports the verified concrete counterexample (e.g. `current_temp_c = 40, ...`) |
+| `DESIGN_GUARD_UNVERIFIED` | Warning | Non-linear arithmetic or unsupported predicate could not be automatically proven exclusive by the rational/integer solver |
+| `DESIGN_GLOBAL_REMOVED` | Error | A `GlobalVar` previously referenced in `dependsOn` was deleted |
+| `DESIGN_GLOBAL_RENAMED` | Warning | A `GlobalVar` in `dependsOn` was renamed in WebGME — update `globals.<name>` or guard references |
+| `DESIGN_TYPE_CHANGED` | Warning | A `GlobalVar`'s `rustType` changed since this hook/guard was last saved |
+| `DESIGN_EVENT_REMOVED` | Error | An `EventDef` referenced by a transition was deleted |
+| `DESIGN_EVENT_RENAMED` | Warning | An `EventDef` in `dependsOn` was renamed |
+| `DESIGN_PAYLOAD_CHANGED` | Warning | An `EventDef`'s `payloadType` changed |
+| `DESIGN_DEPENDENCY_MISSING` | Warning | Referenced `dependsOn` Set member no longer exists — recheck code |

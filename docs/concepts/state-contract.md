@@ -1,53 +1,60 @@
-# The Rust State Contract
+# Rust State & Transition Hook Contract
 
-Every `State` node in WebGME maps 1-to-1 to a Rust module under `src/states/<snake_name>.rs`. Because every state follows one tiny, `#![no_std]`-friendly contract, generated machines compose cleanly without macros or dynamic dispatch.
+Every `State` in Rusty maps cleanly to one pure `#![no_std]`-friendly state module (`src/states/<state>.rs`) without ever importing `StateId` or `Event`. Control flow, transition dispatch, and guard evaluation live in generated `src/machine.rs`.
 
-## Module Signature
-
-Every state file imports generated types from `crate::types` and exposes three functions:
+## Canonical State Module Structure (`src/states/<state>.rs`)
 
 ```rust
-use crate::types::{Event, Globals, Outcome, StateId};
+#![allow(unused_variables)]
+//! State hooks for: Heating
+//! Topology and guards are generated in src/machine.rs.
 
+use crate::types::Globals;
+
+/// Entry action when entering Heating
+// @rusty:hook entry
 pub fn on_enter(globals: &mut Globals) {
-    // Runs once whenever the machine transitions INTO this state
+    globals.cycle_ticks = 0;
+    globals.status_note = String::from("Heating");
 }
 
-pub fn on_event(globals: &mut Globals, event: &Event) -> Outcome {
-    // Runs on every dispatched Event while this state is active
-    match event {
-        Event::Tick => Outcome::Stay,
-        _ => Outcome::Stay,
-    }
-}
+/// Exit action when leaving Heating
+// @rusty:hook exit
+pub fn on_exit(globals: &mut Globals) {}
 
-pub fn on_exit(globals: &mut Globals) {
-    // Runs once whenever the machine transitions OUT OF this state
+/// Transition: Heating --(Tick)--> Heating (stay)
+/// Guard: current_temp_c < 40.0 && cycle_ticks < max_cycle_ticks && current_temp_c < target_temp_c + hysteresis_c
+// @rusty:hook tr:tr_heat_step
+pub fn tr_heat_step(globals: &mut Globals) {
+    let power_c = if globals.eco_mode { 1.0 } else { 1.75 };
+    let watts = if globals.eco_mode { 15.0 } else { 25.0 };
+    let loss = (globals.current_temp_c - globals.ambient_temp_c) * 0.125;
+    globals.current_temp_c = ((globals.current_temp_c + power_c - loss) * 100.0).round() / 100.0;
+    globals.energy_wh = ((globals.energy_wh + watts) * 100.0).round() / 100.0;
+    globals.cycle_ticks += 1;
 }
 ```
 
-## Generated Shared Types (`src/types.rs`)
+## Contract Rules
 
-`src/common/rustCodegen.js` synthesizes `src/types.rs` directly from your WebGME model:
+- **Strict Control-Flow Isolation**: State modules import **only** `use crate::types::Globals;`. Referencing `StateId::*`, `Event::*`, or return-control enums inside any state or transition hook triggers an immediate **`RUSTY_E040`** error.
+- **State Lifecycle Hooks (`on_enter`, `on_exit`)**:
+  - `on_enter(globals: &mut Globals)` runs immediately on initial entry and whenever an external transition (or a self-transition with `reenter = true`) enters the state.
+  - `on_exit(globals: &mut Globals)` runs before leaving the state (no `during` hook exists on states).
+  - Neither `on_enter` nor `on_exit` receives an event `payload` (`RUSTY_E041` if referenced).
+- **Squashed Transition Action Hooks (`tr_<slug>`)**:
+  - Transitions with non-empty `action` bodies are emitted into the source state's `.rs` file with concise squashed function names such as `tr_heat_step` or `tr_set_target`, annotated with full `/// Transition:` / `/// Guard:` doc comments and `// @rusty:hook tr:<fnName>` markers.
+  - If the trigger event declares a `payloadType` (for example `SetTarget` with `f64`), the signature automatically receives `payload: f64`.
+- **Single-Hook Contextual Editing**:
+  - In Rusty Studio, **State Inspector** (`Entry` | `Exit`) and **Transition Inspector** (`Action Hook`) display the complete composed `.rs` file so surrounding signatures and functions remain visible, while locking every line outside the active hook body as strictly read-only.
 
-- **`StateId`**: An enum with one PascalCase variant per `State` child node (e.g., `StateId::Standby`, `StateId::Heating`).
-- **`Event`**: An enum generated from every `EventDef` node. Events with an empty `payloadType` generate unit variants (`Event::Tick`); events with a `payloadType` generate tuple variants (`Event::SetTarget(f64)`).
-- **`Globals`**: A struct whose fields come from `GlobalVar` nodes (`bool`, `i32`, `i64`, `u32`, `f64`, `String`), initialized from each node's `initialValue`.
-- **`Outcome`**: Controls what happens after `on_event` returns:
+## Execution Equivalence (Live Simulator & Native `rustc`)
 
-| Variant | Dispatcher Behavior |
-| --- | --- |
-| `Outcome::Stay` | Stays in the current state unless a fallback WebGME `Transition` guard matches |
-| `Outcome::Transition(StateId::Target)` | Runs `on_exit()` on the old state, switches `current = Target`, and runs `on_enter()` on the new state |
-| `Outcome::Emit(Event::SomeEvent)` | Re-dispatches `Event::SomeEvent` immediately within the same step (up to depth 8), allowing a state to raise internal alerts cleanly |
+Both the browser-side `RustySimEngine` and the generated `src/machine.rs` execute the exact same pure lifecycle:
 
-## Supported Expression Features in the Dynamic Browser Simulator
+1. Match `(self.current, event)` and evaluate pure guard expressions in `select_transition`.
+2. Verify determinism (`debug_assert!` in Rust, formal prover at edit time).
+3. Run `exit -> tr_* -> enter` for external transitions (or self-transitions with `reenter = true`), and `tr_*` alone for self-transitions with `reenter = false`.
 
-`RustySimEngine` interprets the exact same Rust contract in the browser, including:
-
-- Assignments and compound arithmetic (`=`, `+=`, `-=`, `*=`, `/=`) on `globals.<field>`
-- Local `let` / `let mut` bindings (with optional type annotations)
-- `if` / `else if` / `else` statements and value-returning `if cond { a } else { b }` expressions
-- `match event { ... }` with payload destructuring (`Event::SetTarget(t)` or `Event::SetTarget(&t)`), pattern alternatives (`A | B`), and match guards (`Event::Tick if ...`)
-- Numeric & clamp helpers commonly used in control logic: `.round()`, `.abs()`, `.floor()`, `.ceil()`, `.clamp(lo, hi)`, `.min(b)`, `.max(b)`
-- `String::from("...")` and `Outcome::{Stay, Transition, Emit}`
+- Mutable fields match **`Globals`** (`globals.blink_count`, `globals.current_temp_c`, etc.)
+- Arithmetic (`+`, `-`, `*`, `/`, `+=`, `-=`, `*=`, `/=`), `.clamp(min, max)`, `.round()`, `if / else`, and `String::from("...")` are supported identically in both the browser simulator and native Cargo builds.

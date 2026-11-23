@@ -1,15 +1,15 @@
 {
   "metaPaths": {
-    "GitArtifactLink": "/q",
-    "StateMachine": "/V",
-    "State": "/Z",
-    "Transition": "/H",
-    "GlobalVar": "/N",
-    "EventDef": "/R"
+    "GitArtifactLink": "/m",
+    "StateMachine": "/n",
+    "State": "/f",
+    "Transition": "/W",
+    "GlobalVar": "/g",
+    "EventDef": "/J"
   },
-  "starterMachinePath": "/2",
+  "starterMachinePath": "/w",
   "starterMachinePaths": {
-    "BlinkyController": "/2",
-    "SmartThermostat": "/iz"
+    "BlinkyController": "/w",
+    "SmartThermostat": "/S"
   }
 }

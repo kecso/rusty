@@ -1,5 +1,5 @@
 //! Generated shared types from WebGME StateMachine: SmartThermostat
-//! Do not hand-edit — regenerate from Rusty Studio.
+//! Control flow belongs to the design; user state modules cannot import StateId or transitions.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StateId {
@@ -28,7 +28,6 @@ pub enum Event {
     SetTarget(f64),
     SetAmbient(f64),
     ToggleEco,
-    OverheatAlert,
     EmergencyShutoff,
     Reset,
 }
@@ -40,7 +39,6 @@ impl Event {
             s if s.starts_with("SetTarget:") => s["SetTarget:".len()..].parse::<f64>().ok().map(Event::SetTarget),
             s if s.starts_with("SetAmbient:") => s["SetAmbient:".len()..].parse::<f64>().ok().map(Event::SetAmbient),
             "ToggleEco" => Some(Event::ToggleEco),
-            "OverheatAlert" => Some(Event::OverheatAlert),
             "EmergencyShutoff" => Some(Event::EmergencyShutoff),
             "Reset" => Some(Event::Reset),
             _ => None,
@@ -49,20 +47,19 @@ impl Event {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum Outcome {
-    Stay,
-    Transition(StateId),
-    Emit(Event),
-}
-
-#[derive(Debug, Clone, PartialEq)]
 pub struct Globals {
     pub current_temp_c: f64,
+    // @rusty:bounds min="10.0" max="32.0"
     pub target_temp_c: f64,
+    // @rusty:bounds min="0.0" max="5.0"
     pub hysteresis_c: f64,
+    // @rusty:bounds min="-20.0" max="50.0"
     pub ambient_temp_c: f64,
+    // @rusty:bounds min="0.0" max=""
     pub energy_wh: f64,
+    // @rusty:bounds min="0" max=""
     pub cycle_ticks: u32,
+    // @rusty:bounds min="1" max=""
     pub max_cycle_ticks: u32,
     pub fault_code: i32,
     pub eco_mode: bool,

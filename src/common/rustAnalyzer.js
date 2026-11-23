@@ -1,17 +1,22 @@
 (function (root, factory) {
   if (typeof module === "object" && module.exports) {
-    module.exports = factory(require("./rustContract"));
+    module.exports = factory(require("./rustContract"), require("./rustGuardLang"));
   } else {
-    root.RustyAnalyzer = factory(root.RustyContract);
+    root.RustyAnalyzer = factory(root.RustyContract, root.RustyGuardLang);
   }
-})(typeof globalThis !== "undefined" ? globalThis : this, function (contract) {
+})(typeof globalThis !== "undefined" ? globalThis : this, function (contract, guardLang) {
   "use strict";
 
-  const { toSnakeCase, toPascalCase } = contract;
+  const {
+    toSnakeCase,
+    toPascalCase,
+    getStateHookBodies,
+    composeStateModuleRs,
+    resolveStateTransitionHooks,
+  } = contract;
 
   /**
    * Blank out comments & string contents while preserving exact line/column offsets.
-   * String contents are kept as quotes + spaces when `blankStrings` is true.
    */
   function maskSource(code, blankStrings) {
     const src = String(code || "");
@@ -105,7 +110,7 @@
     return starts;
   }
 
-  function offsetToPos(lineStarts, offset) {
+  function offsetToPos(lineStarts, offset, lineOffset = 0, colOffset = 0) {
     let lo = 0;
     let hi = lineStarts.length - 1;
     while (lo <= hi) {
@@ -115,8 +120,8 @@
     }
     const lineIdx = Math.max(0, hi);
     return {
-      line: lineIdx + 1,
-      column: offset - lineStarts[lineIdx] + 1,
+      line: lineIdx + 1 + lineOffset,
+      column: offset - lineStarts[lineIdx] + 1 + colOffset,
     };
   }
 
@@ -141,7 +146,7 @@
   function findClosest(target, candidates) {
     let best = null;
     let bestDist = Infinity;
-    const low = target.toLowerCase();
+    const low = String(target || "").toLowerCase();
     for (const c of candidates) {
       const d = levenshtein(low, c.toLowerCase());
       if (d < bestDist && d <= Math.max(2, Math.floor(c.length / 2))) {
@@ -184,358 +189,6 @@
 
   function isNumericType(rustType) {
     return /^(?:i8|i16|i32|i64|isize|u8|u16|u32|u64|usize|f32|f64)$/.test(String(rustType || "").trim());
-  }
-
-  /**
-   * Perform instant edit-time semantic analysis on a Rust state module
-   * against the live WebGME StateMachine model.
-   *
-   * @param {string} code Rust source code of the state
-   * @param {object} model Normalized StateMachine model from WebGME
-   * @param {object} [currentState] Current State node object
-   * @returns {{ diagnostics: Array<object>, durationMs: number, stats: object }}
-   */
-  function analyzeStateCode(code, model, currentState) {
-    const t0 = typeof performance !== "undefined" ? performance.now() : Date.now();
-    const src = String(code || "");
-    const maskedNoComments = maskSource(src, false);
-    const maskedClean = maskSource(src, true);
-    const lineStarts = buildLineStarts(src);
-    const diagnostics = [];
-
-    function pushDiag(severity, codeId, message, startOff, endOff, quickFix) {
-      const s = offsetToPos(lineStarts, Math.max(0, startOff));
-      const e = offsetToPos(lineStarts, Math.max(startOff + 1, endOff));
-      diagnostics.push({
-        severity,
-        code: codeId,
-        message,
-        startLine: s.line,
-        startColumn: s.column,
-        endLine: e.line,
-        endColumn: e.column,
-        quickFix: quickFix || null,
-      });
-    }
-
-    // Build live WebGME symbol tables
-    const globalMap = new Map();
-    for (const g of (model && model.globals) || []) {
-      const key = toSnakeCase(g.name);
-      globalMap.set(key, { ...g, snakeName: key });
-    }
-    const globalNames = Array.from(globalMap.keys());
-
-    const eventMap = new Map();
-    for (const ev of (model && model.events) || []) {
-      const pascal = toPascalCase(ev.name);
-      eventMap.set(pascal, { ...ev, pascalName: pascal, payloadType: (ev.payloadType || "").trim() });
-    }
-    const eventNames = Array.from(eventMap.keys());
-
-    const stateMap = new Map();
-    for (const st of (model && model.states) || []) {
-      const pascal = toPascalCase(st.name);
-      stateMap.set(pascal, { ...st, pascalName: pascal });
-    }
-    const stateNames = Array.from(stateMap.keys());
-
-    const outgoingTargets = new Set();
-    const outgoingEvents = new Set();
-    if (currentState && model && Array.isArray(model.transitions)) {
-      for (const tr of model.transitions) {
-        if (tr.srcName === currentState.name || (currentState.id && tr.srcId === currentState.id)) {
-          if (tr.dstName) outgoingTargets.add(toPascalCase(tr.dstName));
-          if (tr.event) outgoingEvents.add(toPascalCase(tr.event));
-        }
-      }
-    }
-
-    // 1. Delimiter balance check ({}, (), [])
-    const stack = [];
-    const pairs = { "{": "}", "(": ")", "[": "]" };
-    const closers = { "}": "{", ")": "(", "]": "[" };
-    for (let i = 0; i < maskedClean.length; i++) {
-      const ch = maskedClean[i];
-      if (pairs[ch]) {
-        stack.push({ ch, offset: i });
-      } else if (closers[ch]) {
-        if (stack.length === 0 || stack[stack.length - 1].ch !== closers[ch]) {
-          pushDiag("error", "RUSTY_E032", `Unexpected closing '${ch}'`, i, i + 1);
-        } else {
-          stack.pop();
-        }
-      }
-    }
-    for (const unclosed of stack) {
-      pushDiag(
-        "error",
-        "RUSTY_E032",
-        `Unclosed '${unclosed.ch}' — expected '${pairs[unclosed.ch]}'`,
-        unclosed.offset,
-        unclosed.offset + 1,
-      );
-    }
-
-    // 2. Contract function presence check
-    if (!/\bpub\s+fn\s+on_event\s*\(/.test(maskedClean)) {
-      pushDiag(
-        "error",
-        "RUSTY_E030",
-        "Missing required state contract function `pub fn on_event(globals: &mut Globals, event: &Event) -> Outcome`",
-        0,
-        Math.min(src.length, 1),
-      );
-    }
-    if (!/\bpub\s+fn\s+on_enter\s*\(/.test(maskedClean)) {
-      pushDiag(
-        "warning",
-        "RUSTY_W031",
-        "Missing `pub fn on_enter(globals: &mut Globals)` lifecycle function",
-        0,
-        Math.min(src.length, 1),
-      );
-    }
-    if (!/\bpub\s+fn\s+on_exit\s*\(/.test(maskedClean)) {
-      pushDiag(
-        "warning",
-        "RUSTY_W031",
-        "Missing `pub fn on_exit(globals: &mut Globals)` lifecycle function",
-        0,
-        Math.min(src.length, 1),
-      );
-    }
-
-    // 3. Global namespace checks (`globals.<field>`)
-    const globalRefRe = /\bglobals\.([a-zA-Z_][a-zA-Z0-9_]*)\b/g;
-    let m;
-    while ((m = globalRefRe.exec(maskedNoComments)) !== null) {
-      const field = m[1];
-      const fieldStart = m.index + "globals.".length;
-      const fieldEnd = fieldStart + field.length;
-
-      const def = globalMap.get(field);
-      if (!def) {
-        const suggestion = findClosest(field, globalNames);
-        const hint = suggestion
-          ? ` Did you mean \`globals.${suggestion}\`?`
-          : globalNames.length > 0
-            ? ` Defined globals: ${globalNames.join(", ")}.`
-            : " No GlobalVar nodes are defined on this StateMachine.";
-        pushDiag(
-          "error",
-          "RUSTY_E001",
-          `Unknown global variable \`globals.${field}\`.${hint}`,
-          fieldStart,
-          fieldEnd,
-          suggestion ? { title: `Replace with '${suggestion}'`, replacement: suggestion } : null,
-        );
-        continue;
-      }
-
-      // Check assignment / compound assignment immediately following `globals.<field>`
-      const after = maskedNoComments.slice(fieldEnd);
-      const assignMatch = /^\s*(\+=|-=|\*=|\/=|=(?!=))\s*([^;\n}]+)/.exec(after);
-      if (assignMatch) {
-        const op = assignMatch[1];
-        const rhsRaw = assignMatch[2].trim();
-        const rhsStart = fieldEnd + after.indexOf(rhsRaw);
-        const rhsEnd = rhsStart + rhsRaw.length;
-
-        if (op !== "=" && !isNumericType(def.rustType)) {
-          pushDiag(
-            "error",
-            "RUSTY_E002",
-            `Operator \`${op}\` cannot be applied to \`globals.${field}: ${def.rustType}\``,
-            fieldStart,
-            rhsEnd,
-          );
-        } else {
-          const litType = inferLiteralType(rhsRaw);
-          if (litType && !isTypeCompatible(def.rustType, litType)) {
-            const extra =
-              litType === "neg_int" && /^u/.test(def.rustType)
-                ? " (negative literal cannot be assigned to unsigned integer)"
-                : "";
-            pushDiag(
-              "error",
-              "RUSTY_E003",
-              `Type mismatch: \`globals.${field}\` has type \`${def.rustType}\`, cannot assign \`${rhsRaw}\`${extra}`,
-              rhsStart,
-              rhsEnd,
-            );
-          }
-        }
-      }
-    }
-
-    // Collect events explicitly matched in this state's `match event` arms
-    const handledInCode = new Set();
-    const matchArmEventRe = /\bEvent::([A-Za-z0-9_]+)\s*(?:\([^)]*\))?(?:\s+if\s+[^=]+)?\s*=>/g;
-    while ((m = matchArmEventRe.exec(maskedNoComments)) !== null) {
-      handledInCode.add(m[1]);
-    }
-
-    // 4. Event namespace & payload checks (`Event::<Variant>`)
-    const eventRefRe = /\bEvent::([A-Za-z0-9_]+)(\s*\(([^)]*)\))?/g;
-    while ((m = eventRefRe.exec(maskedNoComments)) !== null) {
-      const variant = m[1];
-      const hasParens = Boolean(m[2]);
-      const argContent = m[3] !== undefined ? m[3].trim() : "";
-      const varStart = m.index + "Event::".length;
-      const varEnd = varStart + variant.length;
-
-      const evDef = eventMap.get(variant);
-      if (!evDef) {
-        const suggestion = findClosest(variant, eventNames);
-        const hint = suggestion
-          ? ` Did you mean \`Event::${suggestion}\`?`
-          : eventNames.length > 0
-            ? ` Defined events: ${eventNames.join(", ")}.`
-            : "";
-        pushDiag(
-          "error",
-          "RUSTY_E010",
-          `Unknown event variant \`Event::${variant}\`.${hint}`,
-          varStart,
-          varEnd,
-          suggestion ? { title: `Replace with '${suggestion}'`, replacement: suggestion } : null,
-        );
-        continue;
-      }
-
-      // Check payload arity
-      if (!evDef.payloadType && hasParens) {
-        pushDiag(
-          "error",
-          "RUSTY_E011",
-          `Event \`Event::${variant}\` is a unit event and takes no payload`,
-          m.index,
-          m.index + m[0].length,
-        );
-      } else if (evDef.payloadType && !hasParens) {
-        pushDiag(
-          "error",
-          "RUSTY_E011",
-          `Event \`Event::${variant}\` requires a \`${evDef.payloadType}\` payload (e.g. \`Event::${variant}(val)\`)`,
-          varStart,
-          varEnd,
-        );
-      } else if (evDef.payloadType && hasParens) {
-        // If inside Outcome::Emit(...) or emit!(...), validate literal payload type
-        const prefix = maskedNoComments.slice(Math.max(0, m.index - 24), m.index);
-        if (/(?:Outcome::Emit|emit!)\s*\(\s*$/.test(prefix)) {
-          if (!argContent) {
-            pushDiag(
-              "error",
-              "RUSTY_E011",
-              `Emitted \`Event::${variant}\` is missing its \`${evDef.payloadType}\` payload value`,
-              m.index,
-              m.index + m[0].length,
-            );
-          } else {
-            const litType = inferLiteralType(argContent);
-            if (litType && !isTypeCompatible(evDef.payloadType, litType)) {
-              pushDiag(
-                "error",
-                "RUSTY_E012",
-                `Payload type mismatch for \`Event::${variant}\`: expected \`${evDef.payloadType}\`, got \`${argContent}\``,
-                m.index,
-                m.index + m[0].length,
-              );
-            }
-          }
-        }
-      }
-    }
-
-    // 5. Self-emitted event checks (`Outcome::Emit(Event::...)` and `emit!(...)`)
-    const emitCallRe = /\bOutcome::Emit\s*\(\s*Event::([A-Za-z0-9_]+)/g;
-    while ((m = emitCallRe.exec(maskedNoComments)) !== null) {
-      const emittedVariant = m[1];
-      if (
-        eventMap.has(emittedVariant) &&
-        !handledInCode.has(emittedVariant) &&
-        !outgoingEvents.has(emittedVariant)
-      ) {
-        pushDiag(
-          "warning",
-          "RUSTY_W013",
-          `Self-emitted \`Event::${emittedVariant}\` is not handled by \`on_event\` or any outgoing WebGME Transition from \`${currentState ? currentState.name : "this state"}\``,
-          m.index,
-          m.index + m[0].length,
-        );
-      }
-    }
-
-    const emitMacroRe = /\bemit!\s*\(/g;
-    while ((m = emitMacroRe.exec(maskedNoComments)) !== null) {
-      pushDiag(
-        "warning",
-        "RUSTY_W014",
-        "Use `Outcome::Emit(Event::...)` instead of `emit!(...)` to emit events in the Rusty `#![no_std]` contract",
-        m.index,
-        m.index + m[0].length,
-      );
-    }
-
-    // 6. StateId namespace & WebGME topology checks (`StateId::<Name>`)
-    const stateRefRe = /\bStateId::([A-Za-z0-9_]+)\b/g;
-    while ((m = stateRefRe.exec(maskedNoComments)) !== null) {
-      const stName = m[1];
-      const stStart = m.index + "StateId::".length;
-      const stEnd = stStart + stName.length;
-
-      if (!stateMap.has(stName)) {
-        const suggestion = findClosest(stName, stateNames);
-        const hint = suggestion
-          ? ` Did you mean \`StateId::${suggestion}\`?`
-          : stateNames.length > 0
-            ? ` Defined states: ${stateNames.join(", ")}.`
-            : "";
-        pushDiag(
-          "error",
-          "RUSTY_E020",
-          `Unknown state \`StateId::${stName}\`.${hint}`,
-          stStart,
-          stEnd,
-          suggestion ? { title: `Replace with '${suggestion}'`, replacement: suggestion } : null,
-        );
-        continue;
-      }
-
-      // Warn if transitioning to a state without a declared WebGME Transition edge
-      if (
-        currentState &&
-        stName !== toPascalCase(currentState.name) &&
-        outgoingTargets.size > 0 &&
-        !outgoingTargets.has(stName)
-      ) {
-        const prefix = maskedNoComments.slice(Math.max(0, m.index - 24), m.index);
-        if (/Outcome::Transition\s*\(\s*$/.test(prefix)) {
-          pushDiag(
-            "warning",
-            "RUSTY_W021",
-            `Transition to \`StateId::${stName}\` has no matching WebGME Transition edge from \`${currentState.name}\``,
-            m.index,
-            stEnd,
-          );
-        }
-      }
-    }
-
-    const durationMs =
-      Math.round(((typeof performance !== "undefined" ? performance.now() : Date.now()) - t0) * 100) /
-      100;
-
-    const errors = diagnostics.filter((d) => d.severity === "error").length;
-    const warnings = diagnostics.filter((d) => d.severity === "warning").length;
-
-    return {
-      diagnostics,
-      durationMs,
-      stats: { errors, warnings, total: diagnostics.length },
-    };
   }
 
   function buildSymbolTables(model) {
@@ -606,18 +259,161 @@
     }
   }
 
+  function scanGlobalsAndAssignments(maskedNoComments, globalMap, globalNames, pushDiag) {
+    const globalRefRe = /\bglobals\.([a-zA-Z_][a-zA-Z0-9_]*)\b/g;
+    let m;
+    while ((m = globalRefRe.exec(maskedNoComments)) !== null) {
+      const field = m[1];
+      const fieldStart = m.index + "globals.".length;
+      const fieldEnd = fieldStart + field.length;
+
+      const def = globalMap.get(field);
+      if (!def) {
+        const suggestion = findClosest(field, globalNames);
+        const hint = suggestion
+          ? ` Did you mean \`globals.${suggestion}\`?`
+          : globalNames.length > 0
+            ? ` Defined globals: ${globalNames.join(", ")}.`
+            : " No GlobalVar nodes are defined on this StateMachine.";
+        pushDiag(
+          "error",
+          "RUSTY_E001",
+          `Unknown global variable \`globals.${field}\`.${hint}`,
+          fieldStart,
+          fieldEnd,
+          suggestion ? { title: `Replace with '${suggestion}'`, replacement: suggestion } : null,
+        );
+        continue;
+      }
+
+      const after = maskedNoComments.slice(fieldEnd);
+      const assignMatch = /^\s*(\+=|-=|\*=|\/=|=(?!=))\s*([^;\n}]+)/.exec(after);
+      if (assignMatch) {
+        const op = assignMatch[1];
+        const rhsRaw = assignMatch[2].trim();
+        const rhsStart = fieldEnd + after.indexOf(rhsRaw);
+        const rhsEnd = rhsStart + rhsRaw.length;
+
+        if (op !== "=" && !isNumericType(def.rustType)) {
+          pushDiag(
+            "error",
+            "RUSTY_E002",
+            `Operator \`${op}\` cannot be applied to \`globals.${field}: ${def.rustType}\``,
+            fieldStart,
+            rhsEnd,
+          );
+        } else {
+          const litType = inferLiteralType(rhsRaw);
+          if (litType && !isTypeCompatible(def.rustType, litType)) {
+            const extra =
+              litType === "neg_int" && /^u/.test(def.rustType)
+                ? " (negative literal cannot be assigned to unsigned integer)"
+                : "";
+            pushDiag(
+              "error",
+              "RUSTY_E003",
+              `Type mismatch: \`globals.${field}\` has type \`${def.rustType}\`, cannot assign \`${rhsRaw}\`${extra}`,
+              rhsStart,
+              rhsEnd,
+            );
+          }
+        }
+      }
+    }
+  }
+
+  function scanForbiddenControlFlow(maskedNoComments, pushDiag) {
+    const forbiddenRe = /\b(StateId::[A-Za-z0-9_]*|Outcome::[A-Za-z0-9_]*|Event::[A-Za-z0-9_]*)\b/g;
+    let m;
+    while ((m = forbiddenRe.exec(maskedNoComments)) !== null) {
+      pushDiag(
+        "error",
+        "RUSTY_E040",
+        `Control-flow reference \`${m[1]}\` is forbidden inside hook code — transitions and events belong strictly to the design`,
+        m.index,
+        m.index + m[0].length,
+      );
+    }
+  }
+
   /**
-   * Validate a transition guard expression (and trigger event) against live WebGME symbols.
+   * Instant semantic analysis of a single hook body (`entry`, `exit`, or `transition` action),
+   * optionally shifted by `lineOffset` / `colOffset` so markers align on the composed file.
    */
-  function analyzeGuardExpression(guardExpr, model, transition) {
+  function analyzeHookBody(bodyCode, model, opts = {}) {
     const t0 = typeof performance !== "undefined" ? performance.now() : Date.now();
-    const expr = String(guardExpr || "");
-    const maskedNoComments = maskSource(expr, false);
-    const maskedClean = maskSource(expr, true);
-    const lineStarts = buildLineStarts(expr);
+    const src = String(bodyCode || "");
+    const maskedNoComments = maskSource(src, false);
+    const maskedClean = maskSource(src, true);
+    const lineStarts = buildLineStarts(src);
+    const lineOffset = Number(opts.lineOffset || 0);
+    const colOffset = Number(opts.colOffset || 0);
     const diagnostics = [];
 
-    function pushDiag(severity, codeId, message, startOff, endOff, quickFix) {
+    const pushDiag = (severity, codeId, message, startOff, endOff, quickFix) => {
+      const s = offsetToPos(lineStarts, Math.max(0, startOff), lineOffset, colOffset);
+      const e = offsetToPos(lineStarts, Math.max(startOff + 1, endOff), lineOffset, colOffset);
+      diagnostics.push({
+        severity,
+        code: codeId,
+        message,
+        startLine: s.line,
+        startColumn: s.column,
+        endLine: e.line,
+        endColumn: e.column,
+        quickFix: quickFix || null,
+      });
+    };
+
+    const { globalMap, globalNames } = buildSymbolTables(model);
+    if (src.trim()) {
+      checkDelimiters(maskedClean, pushDiag);
+      scanForbiddenControlFlow(maskedNoComments, pushDiag);
+      scanGlobalsAndAssignments(maskedNoComments, globalMap, globalNames, pushDiag);
+
+      const hasPayload = opts.kind === "transition" && Boolean((opts.payloadType || "").trim());
+      if (!hasPayload) {
+        const payRe = /(?<![a-zA-Z0-9_.])\bpayload\b/g;
+        let pm;
+        while ((pm = payRe.exec(maskedNoComments)) !== null) {
+          pushDiag(
+            "error",
+            "RUSTY_E041",
+            opts.kind === "transition"
+              ? "Trigger event has no payload; `payload` is not in scope in this transition action"
+              : "`payload` is only available inside transition actions whose trigger event carries a payload",
+            pm.index,
+            pm.index + pm[0].length,
+          );
+        }
+      }
+    }
+
+    const durationMs =
+      Math.round(((typeof performance !== "undefined" ? performance.now() : Date.now()) - t0) * 100) / 100;
+    const errors = diagnostics.filter((d) => d.severity === "error").length;
+    const warnings = diagnostics.filter((d) => d.severity === "warning").length;
+
+    return {
+      diagnostics,
+      durationMs,
+      stats: { errors, warnings, total: diagnostics.length },
+    };
+  }
+
+  /**
+   * Perform instant edit-time semantic analysis on a complete composed V3 Rust state module
+   * (`src/states/<state>.rs`) against the live WebGME StateMachine model.
+   */
+  function analyzeStateCode(code, model, currentState) {
+    const t0 = typeof performance !== "undefined" ? performance.now() : Date.now();
+    const src = String(code || "");
+    const maskedNoComments = maskSource(src, false);
+    const maskedClean = maskSource(src, true);
+    const lineStarts = buildLineStarts(src);
+    const diagnostics = [];
+
+    const pushDiag = (severity, codeId, message, startOff, endOff, quickFix) => {
       const s = offsetToPos(lineStarts, Math.max(0, startOff));
       const e = offsetToPos(lineStarts, Math.max(startOff + 1, endOff));
       diagnostics.push({
@@ -630,106 +426,70 @@
         endColumn: e.column,
         quickFix: quickFix || null,
       });
+    };
+
+    const { globalMap, globalNames } = buildSymbolTables(model);
+
+    checkDelimiters(maskedClean, pushDiag);
+    scanForbiddenControlFlow(maskedNoComments, pushDiag);
+
+    if (!/\bpub\s+fn\s+on_enter\s*\(/.test(maskedClean)) {
+      pushDiag(
+        "warning",
+        "RUSTY_W031",
+        "Missing `pub fn on_enter(globals: &mut Globals)` entry hook function",
+        0,
+        Math.min(src.length, 1),
+      );
+    }
+    if (!/\bpub\s+fn\s+on_exit\s*\(/.test(maskedClean)) {
+      pushDiag(
+        "warning",
+        "RUSTY_W031",
+        "Missing `pub fn on_exit(globals: &mut Globals)` exit hook function",
+        0,
+        Math.min(src.length, 1),
+      );
     }
 
-    const { globalMap, globalNames, eventMap, eventNames, stateMap, stateNames } =
-      buildSymbolTables(model);
+    scanGlobalsAndAssignments(maskedNoComments, globalMap, globalNames, pushDiag);
 
-    if (transition && transition.event) {
-      const evKey = toPascalCase(transition.event);
-      if (!eventMap.has(evKey)) {
-        const suggestion = findClosest(evKey, eventNames);
-        const hint = suggestion
-          ? ` Did you mean \`${suggestion}\`?`
-          : eventNames.length > 0
-            ? ` Defined events: ${eventNames.join(", ")}.`
-            : "";
-        diagnostics.push({
-          severity: "error",
-          code: "RUSTY_E010",
-          message: `Transition references unknown event \`${transition.event}\`.${hint}`,
-          startLine: 1,
-          startColumn: 1,
-          endLine: 1,
-          endColumn: 1,
-          quickFix: null,
-        });
+    // Check `payload` references inside on_enter / on_exit or unit-event transition hooks
+    const hooksByFn = new Map();
+    if (currentState && model) {
+      for (const h of resolveStateTransitionHooks(model, currentState)) {
+        hooksByFn.set(h.fnName, h);
       }
     }
-
-    if (expr.trim()) {
-      checkDelimiters(maskedClean, pushDiag);
-
-      const globalRefRe = /\bglobals\.([a-zA-Z_][a-zA-Z0-9_]*)\b/g;
-      let m;
-      while ((m = globalRefRe.exec(maskedNoComments)) !== null) {
-        const field = m[1];
-        const fieldStart = m.index + "globals.".length;
-        const fieldEnd = fieldStart + field.length;
-        if (!globalMap.has(field)) {
-          const suggestion = findClosest(field, globalNames);
-          const hint = suggestion
-            ? ` Did you mean \`globals.${suggestion}\`?`
-            : globalNames.length > 0
-              ? ` Defined globals: ${globalNames.join(", ")}.`
-              : "";
-          pushDiag(
-            "error",
-            "RUSTY_E001",
-            `Unknown global \`globals.${field}\` in transition guard.${hint}`,
-            fieldStart,
-            fieldEnd,
-            suggestion ? { title: `Replace with '${suggestion}'`, replacement: suggestion } : null,
-          );
-        } else {
-          const def = globalMap.get(field);
-          const after = maskedNoComments.slice(fieldEnd);
-          const cmpMatch = /^\s*(?:==|!=|<=|>=|<|>)\s*([^&\s|;)]+)/.exec(after);
-          if (cmpMatch) {
-            const litType = inferLiteralType(cmpMatch[1].trim());
-            if (litType && !isTypeCompatible(def.rustType, litType)) {
-              pushDiag(
-                "error",
-                "RUSTY_E003",
-                `Type mismatch in guard: \`globals.${field}\` is \`${def.rustType}\`, compared against \`${cmpMatch[1].trim()}\``,
-                fieldStart,
-                fieldEnd,
-              );
-            }
-          }
-        }
-      }
-
-      const evRe = /\bEvent::([A-Za-z0-9_]+)\b/g;
-      while ((m = evRe.exec(maskedNoComments)) !== null) {
-        if (!eventMap.has(m[1])) {
-          pushDiag(
-            "error",
-            "RUSTY_E010",
-            `Unknown event \`Event::${m[1]}\` in guard.`,
-            m.index,
-            m.index + m[0].length,
-          );
-        }
-      }
-
-      const stRe = /\bStateId::([A-Za-z0-9_]+)\b/g;
-      while ((m = stRe.exec(maskedNoComments)) !== null) {
-        if (!stateMap.has(m[1])) {
-          pushDiag(
-            "error",
-            "RUSTY_E020",
-            `Unknown state \`StateId::${m[1]}\` in guard.`,
-            m.index,
-            m.index + m[0].length,
-          );
-        }
+    const composedLines = src.split("\n");
+    const parsed = contract.parseStateModuleRs(src);
+    if (parsed.entryCode && /(?<![a-zA-Z0-9_.])\bpayload\b/.test(maskSource(parsed.entryCode, true))) {
+      const lineIdx = composedLines.findIndex((l) => /pub\s+fn\s+on_enter\b/.test(l));
+      const off = lineIdx >= 0 ? lineStarts[lineIdx] : 0;
+      pushDiag("error", "RUSTY_E041", "`payload` is not available inside `on_enter`", off, off + 1);
+    }
+    if (parsed.exitCode && /(?<![a-zA-Z0-9_.])\bpayload\b/.test(maskSource(parsed.exitCode, true))) {
+      const lineIdx = composedLines.findIndex((l) => /pub\s+fn\s+on_exit\b/.test(l));
+      const off = lineIdx >= 0 ? lineStarts[lineIdx] : 0;
+      pushDiag("error", "RUSTY_E041", "`payload` is not available inside `on_exit`", off, off + 1);
+    }
+    for (const [fnName, body] of Object.entries(parsed.actionsByFnName || {})) {
+      const meta = hooksByFn.get(fnName);
+      if (meta && !meta.payloadType && /(?<![a-zA-Z0-9_.])\bpayload\b/.test(maskSource(body, true))) {
+        const lineIdx = composedLines.findIndex((l) => new RegExp(`pub\\s+fn\\s+${fnName}\\b`).test(l));
+        const off = lineIdx >= 0 ? lineStarts[lineIdx] : 0;
+        pushDiag(
+          "error",
+          "RUSTY_E041",
+          `\`payload\` referenced in \`${fnName}\`, but trigger event \`${meta.transition.event}\` carries no payload`,
+          off,
+          off + 1,
+        );
       }
     }
 
     const durationMs =
-      Math.round(((typeof performance !== "undefined" ? performance.now() : Date.now()) - t0) * 100) /
-      100;
+      Math.round(((typeof performance !== "undefined" ? performance.now() : Date.now()) - t0) * 100) / 100;
     const errors = diagnostics.filter((d) => d.severity === "error").length;
     const warnings = diagnostics.filter((d) => d.severity === "warning").length;
 
@@ -741,13 +501,18 @@
   }
 
   /**
-   * Extract all live WebGME design elements referenced by a State's Rust code
-   * or a Transition's guard + trigger event (`dependsOn` Set membership & snapshot).
+   * Validate a transition guard expression using RustyGuardLang.
+   */
+  function analyzeGuardExpression(guardExpr, model, transition) {
+    return guardLang.validateGuard(guardExpr, model, transition);
+  }
+
+  /**
+   * Extract all live WebGME design elements referenced by State hook code OR a Transition
+   * (`triggerEvent` + guard + action) for `dependsOn` Set membership & drift detection.
    */
   function extractDependencies(codeOrGuard, model, opts = {}) {
-    const masked = maskSource(String(codeOrGuard || ""), false);
-    const { globalMap, eventMap, stateMap } = buildSymbolTables(model);
-
+    const { globalMap, eventMap } = buildSymbolTables(model);
     const memberIdSet = new Set();
     const snapshot = { globals: {}, events: {}, states: {} };
 
@@ -765,30 +530,38 @@
       snapshot.events[key] = { name: def.pascalName || def.name, payloadType: def.payloadType || "" };
     }
 
-    function recordState(def) {
-      if (!def) return;
-      const key = def.id || `state:${def.pascalName}`;
-      if (def.id) memberIdSet.add(def.id);
-      snapshot.states[key] = { name: def.pascalName || def.name };
-    }
-
-    let m;
-    const gRe = /\bglobals\.([a-zA-Z_][a-zA-Z0-9_]*)\b/g;
-    while ((m = gRe.exec(masked)) !== null) {
-      recordGlobal(globalMap.get(m[1]));
-    }
-
-    const eRe = /\bEvent::([A-Za-z0-9_]+)\b/g;
-    while ((m = eRe.exec(masked)) !== null) {
-      recordEvent(eventMap.get(m[1]));
-    }
     if (opts.triggerEvent) {
       recordEvent(eventMap.get(toPascalCase(opts.triggerEvent)));
     }
 
-    const sRe = /\bStateId::([A-Za-z0-9_]+)\b/g;
-    while ((m = sRe.exec(masked)) !== null) {
-      recordState(stateMap.get(m[1]));
+    // If guard text is explicitly passed (or caller is analyzing a guard expression via triggerEvent),
+    // parse with guardLang so bare global names like `current_temp_c` are captured in dependsOn!
+    const guardSource =
+      opts.guardText !== undefined
+        ? opts.guardText
+        : opts.isGuard || opts.triggerEvent
+          ? String(codeOrGuard || "")
+          : "";
+    if (guardSource && guardSource.trim()) {
+      const vg = guardLang.validateGuard(guardSource, model, { event: opts.triggerEvent || "" });
+      for (const snakeName of vg.referencedGlobals || []) {
+        recordGlobal(globalMap.get(snakeName));
+      }
+    }
+
+    const codeSource =
+      opts.actionText !== undefined
+        ? opts.actionText
+        : !opts.isGuard
+          ? String(codeOrGuard || "")
+          : "";
+    if (codeSource && codeSource.trim()) {
+      const masked = maskSource(codeSource, false);
+      const gRe = /\bglobals\.([a-zA-Z_][a-zA-Z0-9_]*)\b/g;
+      let m;
+      while ((m = gRe.exec(masked)) !== null) {
+        recordGlobal(globalMap.get(m[1]));
+      }
     }
 
     return {
@@ -818,12 +591,12 @@
     return null;
   }
 
-  function detectDriftReasons(node, model, tables) {
+  function detectDriftReasons(node, _model, tables) {
     const reasons = [];
     const snap = parseDepsSnapshot(node.depsSignature);
     if (!snap) return reasons;
 
-    const { globalById, eventById, stateById } = tables;
+    const { globalById, eventById } = tables;
 
     for (const [id, prev] of Object.entries(snap.globals)) {
       if (!globalById.size && id.startsWith("global:")) continue;
@@ -863,7 +636,7 @@
           reasons.push({
             severity: "error",
             code: "DESIGN_EVENT_REMOVED",
-            message: `Referenced event \`Event::${prev.name}\` was removed from the design`,
+            message: `Referenced event \`${prev.name}\` was removed from the design`,
           });
         }
       } else {
@@ -871,43 +644,22 @@
           reasons.push({
             severity: "error",
             code: "DESIGN_EVENT_RENAMED",
-            message: `Referenced event \`Event::${prev.name}\` was renamed to \`Event::${cur.pascalName}\``,
+            message: `Referenced event \`${prev.name}\` was renamed to \`${cur.pascalName}\``,
           });
         }
         if ((cur.payloadType || "") !== (prev.payloadType || "")) {
           reasons.push({
             severity: "warning",
             code: "DESIGN_PAYLOAD_CHANGED",
-            message: `Payload type of \`Event::${cur.pascalName}\` changed (${prev.payloadType || "none"} → ${cur.payloadType || "none"})`,
+            message: `Payload type of \`${cur.pascalName}\` changed (${prev.payloadType || "none"} → ${cur.payloadType || "none"})`,
           });
         }
       }
     }
 
-    for (const [id, prev] of Object.entries(snap.states)) {
-      if (!stateById.size && id.startsWith("state:")) continue;
-      const cur = stateById.get(id);
-      if (!cur) {
-        if (!tables.stateMap.has(toPascalCase(prev.name))) {
-          reasons.push({
-            severity: "error",
-            code: "DESIGN_STATE_REMOVED",
-            message: `Referenced state \`StateId::${prev.name}\` was removed from the design`,
-          });
-        }
-      } else if (cur.pascalName !== toPascalCase(prev.name)) {
-        reasons.push({
-          severity: "error",
-          code: "DESIGN_STATE_RENAMED",
-          message: `Referenced state \`StateId::${prev.name}\` was renamed to \`StateId::${cur.pascalName}\``,
-        });
-      }
-    }
-
-    // Check explicit WebGME Set membership ids that became dangling
     if (Array.isArray(node.dependsOn)) {
       for (const depId of node.dependsOn) {
-        if (!globalById.has(depId) && !eventById.has(depId) && !stateById.has(depId)) {
+        if (!globalById.has(depId) && !eventById.has(depId)) {
           if (!reasons.some((r) => r.code.endsWith("_REMOVED"))) {
             reasons.push({
               severity: "warning",
@@ -923,17 +675,22 @@
   }
 
   /**
-   * Compute full design-to-code impact report across all States and Transition guards
-   * in a StateMachine model, combining live code diagnostics with stored WebGME `dependsOn` drift.
+   * Compute full design-to-code impact + formal determinism proof across all States and Transitions.
    */
   function computeDesignImpact(model) {
     const tables = buildSymbolTables(model);
+    const det = guardLang.checkMachineDeterminism(model);
     const byStateId = {};
     const byTransitionId = {};
     const items = [];
 
     for (const st of (model && model.states) || []) {
-      const codeRes = analyzeStateCode(st.code || "", model, st);
+      const { entryCode, exitCode } = getStateHookBodies(st);
+      const composed =
+        st.code && (!entryCode && !exitCode)
+          ? st.code
+          : composeStateModuleRs(model, { ...st, entryCode, exitCode }).code;
+      const codeRes = analyzeStateCode(composed, model, st);
       const drift = detectDriftReasons(st, model, tables);
       const seenMsg = new Set();
       const reasons = [];
@@ -958,11 +715,37 @@
     }
 
     for (const tr of (model && model.transitions) || []) {
+      const tid = tr.id || contract.transitionKey(tr);
+      const evDef = tables.eventMap.get(toPascalCase(tr.event || ""));
       const guardRes = analyzeGuardExpression(tr.guard || "", model, tr);
+      const actionRes = analyzeHookBody(tr.action || "", model, {
+        kind: "transition",
+        payloadType: evDef ? evDef.payloadType : "",
+      });
       const drift = detectDriftReasons(tr, model, tables);
+      const detInfo = det.byTransitionId[tid];
+      const detReasons = [];
+
+      if (detInfo && detInfo.overlaps.length > 0) {
+        for (const ov of detInfo.overlaps) {
+          const otherLabel = ov.other ? `${ov.other.dstName || "?"} (${ov.other.name || ov.other.event})` : "sibling transition";
+          detReasons.push({
+            severity: "error",
+            code: "DESIGN_GUARD_OVERLAP",
+            message: `Non-deterministic overlap with → ${otherLabel} when ${ov.counterexampleText}`,
+          });
+        }
+      } else if (detInfo && detInfo.unknowns.length > 0) {
+        detReasons.push({
+          severity: "warning",
+          code: "DESIGN_GUARD_UNVERIFIED",
+          message: detInfo.unknowns[0].reason || "Guard exclusivity could not be automatically verified",
+        });
+      }
+
       const seenMsg = new Set();
       const reasons = [];
-      for (const r of [...drift, ...guardRes.diagnostics]) {
+      for (const r of [...drift, ...guardRes.diagnostics, ...actionRes.diagnostics, ...detReasons]) {
         const key = `${r.code}:${r.message}`;
         if (seenMsg.has(key)) continue;
         seenMsg.add(key);
@@ -971,13 +754,13 @@
       if (reasons.length > 0) {
         const entry = {
           kind: "transition",
-          id: tr.id || tr.name,
+          id: tid,
           name: `${tr.srcName || "?"} -> ${tr.dstName || "?"} (${tr.event})`,
           errors: reasons.filter((r) => r.severity === "error").length,
           warnings: reasons.filter((r) => r.severity === "warning").length,
           reasons,
         };
-        byTransitionId[entry.id] = entry;
+        byTransitionId[tid] = entry;
         items.push(entry);
       }
     }
@@ -989,6 +772,7 @@
       totalImpacted: impactedStates + impactedTransitions,
       impactedStates,
       impactedTransitions,
+      determinism: det,
       byStateId,
       byTransitionId,
       items,
@@ -996,6 +780,7 @@
   }
 
   return {
+    analyzeHookBody,
     analyzeStateCode,
     analyzeGuardExpression,
     extractDependencies,

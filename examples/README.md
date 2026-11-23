@@ -4,16 +4,16 @@ Self-contained, runnable Rust state-machine crates synchronized with Rusty Studi
 
 | Directory | StateMachine | Highlights |
 | --- | --- | --- |
-| [`blinky/`](./blinky) | `BlinkyController` | Hello-world GPIO blink loop, thermal limit guard, `Fault` / `Reset` recovery |
-| [`smart-thermostat/`](./smart-thermostat) | `SmartThermostat` | Physics-computing HVAC controller: `f64` thermal drift & `energy_wh`, payload events (`SetTarget:26.0`, `SetAmbient:35.0`), `Outcome::Emit(Event::OverheatAlert)`, `Cooldown`, `SafeLockout` |
+| [`blinky/`](./blinky) | `BlinkyController` | Hello-world GPIO blink loop, Entry/Exit hooks, mutually exclusive thermal guard, `Fault` / `Reset` |
+| [`smart-thermostat/`](./smart-thermostat) | `SmartThermostat` | Model-driven HVAC controller: `f64` physics in self-transition actions, payload events (`SetTarget:26.0`, `SetAmbient:35.0`), domain bounds, and proven mutually exclusive guards |
 
 ## Why Fork & Use a `dev` Branch?
 
 In `RustySeed.webgmex`, both models already have their repository name, branch, and machine-level crate directory pre-filled:
-- `gitOwner`: `""` *(click **Bind GitHub Repo…** in Studio to bind `<your-username>`)*
+- `gitOwner`: `""` *(click **Connect Git Repository…** in Studio once to connect `<your-username>`)*
 - `gitRepo`: `rusty`
 - `gitBranch`: `dev`
-- `gitPath` (on `StateMachine`): `examples/<name>` *(states resolve automatically to `<dir>/src/states/<state>.rs`, with optional per-state override)*
+- `gitPath` (on `StateMachine`): `examples/<name>` *(states resolve automatically to `<dir>/src/states/<state>.rs`)*
 
 By forking `kecso/rusty` and creating a `dev` branch in your fork, you can safely test **Pull from GitHub**, live **Monaco editing**, **Commit & Push (`⌘S`)**, **auto-rebase**, and **HTTP 409 3-way merge** without touching `main` or needing push access to upstream.
 

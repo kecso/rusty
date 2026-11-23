@@ -2,7 +2,7 @@
 name = "smart-thermostat"
 version = "0.1.0"
 edition = "2021"
-description = "Tutorial HVAC controller showcasing thermal physics computation, f64 payload events, self-emitted safety alerts (Outcome::Emit), hysteresis deadband, and safe lockout recovery."
+description = "Model-driven HVAC controller showcasing pure Entry/Exit state hooks, self-transition physics actions, f64 payload events, and formally proven mutually exclusive guards."
 
 [lib]
 name = "smart_thermostat"

@@ -7,7 +7,7 @@
 })(typeof globalThis !== "undefined" ? globalThis : this, function (contract, layoutMod) {
   "use strict";
 
-  const { toSnakeCase, toPascalCase, toCrateName } = contract;
+  const { toSnakeCase, toPascalCase, toCrateName, parseStateModuleRs, hydrateModelStateCodes } = contract;
 
   const STATE_COLORS = ["#38bdf8", "#22c55e", "#f97316", "#eab308", "#06b6d4", "#a855f7", "#ef4444"];
 
@@ -44,7 +44,6 @@
     const globals = [];
     if (!text) return { states, events, globals };
 
-    // pub enum StateId { ... }
     const stateBody = extractBraceBody(text, /pub\s+enum\s+StateId\s*\{/);
     if (stateBody) {
       for (const rawLine of stateBody.split("\n")) {
@@ -55,7 +54,6 @@
       }
     }
 
-    // pub enum Event { ... }
     const eventBody = extractBraceBody(text, /pub\s+enum\s+Event\s*\{/);
     if (eventBody) {
       for (const rawLine of eventBody.split("\n")) {
@@ -72,7 +70,6 @@
       }
     }
 
-    // pub struct Globals { ... }
     const defaultsMap = new Map();
     const defaultSection = /impl\s+Default\s+for\s+Globals\s*\{/.exec(text);
     if (defaultSection) {
@@ -98,7 +95,20 @@
 
     const globalsBody = extractBraceBody(text, /pub\s+struct\s+Globals\s*\{/);
     if (globalsBody) {
+      let pendingBounds = { minValue: "", maxValue: "" };
       for (const rawLine of globalsBody.split("\n")) {
+        const bMatch = /\/\/\s*@rusty:bounds\s+min=("(?:[^"\\]|\\.)*")\s+max=("(?:[^"\\]|\\.)*")/.exec(rawLine);
+        if (bMatch) {
+          try {
+            pendingBounds = {
+              minValue: JSON.parse(bMatch[1]),
+              maxValue: JSON.parse(bMatch[2]),
+            };
+          } catch (_err) {
+            pendingBounds = { minValue: "", maxValue: "" };
+          }
+          continue;
+        }
         const clean = rawLine.replace(/\/\/.*$/, "").trim().replace(/,$/, "");
         const m = /^(?:pub\s+)?([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*([A-Za-z0-9_]+)$/.exec(clean);
         if (!m || m[1] === "_reserved") continue;
@@ -112,8 +122,11 @@
               : m[2] === "String"
                 ? ""
                 : "0",
+          minValue: pendingBounds.minValue,
+          maxValue: pendingBounds.maxValue,
           description: "",
         });
+        pendingBounds = { minValue: "", maxValue: "" };
       }
     }
 
@@ -124,29 +137,55 @@
     const out = { machineName: "", initialState: "", transitions: [] };
     if (!text) return out;
 
-    const hdrMatch = /Generated state machine dispatcher for ([A-Za-z0-9_-]+)/.exec(text);
+    const hdrMatch = /(?:Generated model-driven state machine dispatcher|Generated state machine dispatcher) for ([A-Za-z0-9_-]+)/.exec(
+      text,
+    );
     if (hdrMatch) out.machineName = hdrMatch[1].trim();
 
     const initMatch = /current:\s*StateId::([A-Za-z0-9_]+)/.exec(text);
     if (initMatch) out.initialState = initMatch[1].trim();
 
-    const evalBody = extractBraceBody(text, /fn\s+evaluate_model_transitions\s*\([^)]*\)[^{]*\{/);
-    if (evalBody) {
-      const ruleRe =
-        /if\s+self\.current\s*==\s*StateId::([A-Za-z0-9_]+)\s*&&\s*matches!\s*\(\s*event\s*,\s*Event::([A-Za-z0-9_]+)(?:\s*\(_\))?\s*\)(?:\s*&&\s*\(([\s\S]*?)\))?\s*\{\s*return\s+Some\s*\(\s*StateId::([A-Za-z0-9_]+)\s*\)\s*;\s*\}/g;
-      let m;
-      let idx = 0;
-      while ((m = ruleRe.exec(evalBody)) !== null) {
+    // Preferred V3 lossless metadata lines (`// @rusty:tr {...}`)
+    const trMetaRe = /\/\/\s*@rusty:tr\s+(\{[^\n]+\})/g;
+    let m;
+    while ((m = trMetaRe.exec(text)) !== null) {
+      try {
+        const meta = JSON.parse(m[1]);
         out.transitions.push({
-          name: `tr_${idx + 1}_${toSnakeCase(m[2])}`,
-          srcName: m[1],
-          dstName: m[4],
-          event: m[2],
-          guard: m[3] ? m[3].trim() : "",
+          name: meta.name || `${toSnakeCase(meta.event || "ev")}_${toSnakeCase(meta.dst || "next")}`,
+          srcName: meta.src || "",
+          dstName: meta.dst || "",
+          event: meta.event || "Tick",
+          guard: meta.guard || "",
           action: "",
-          priority: idx + 1,
+          reenter: Boolean(meta.reenter),
+          fnName: meta.fn || "",
         });
-        idx++;
+      } catch (_err) {
+        // ignore malformed comment
+      }
+    }
+
+    // Legacy V2 fallback (`evaluate_model_transitions`)
+    if (out.transitions.length === 0) {
+      const evalBody = extractBraceBody(text, /fn\s+evaluate_model_transitions\s*\([^)]*\)[^{]*\{/);
+      if (evalBody) {
+        const ruleRe =
+          /if\s+self\.current\s*==\s*StateId::([A-Za-z0-9_]+)\s*&&\s*matches!\s*\(\s*event\s*,\s*Event::([A-Za-z0-9_]+)(?:\s*\(_\))?\s*\)(?:\s*&&\s*\(([\s\S]*?)\))?\s*\{\s*return\s+Some\s*\(\s*StateId::([A-Za-z0-9_]+)\s*\)\s*;\s*\}/g;
+        let idx = 0;
+        while ((m = ruleRe.exec(evalBody)) !== null) {
+          out.transitions.push({
+            name: `tr_${idx + 1}_${toSnakeCase(m[2])}`,
+            srcName: m[1],
+            dstName: m[4],
+            event: m[2],
+            guard: m[3] ? m[3].trim() : "",
+            action: "",
+            reenter: false,
+            fnName: "",
+          });
+          idx++;
+        }
       }
     }
 
@@ -156,7 +195,6 @@
   function inferFromStateSource(stateName, code) {
     const globals = new Map();
     const events = new Map();
-    const targets = new Set();
     const transitions = [];
 
     let m;
@@ -174,12 +212,6 @@
       }
     }
 
-    const stRe = /\bStateId::([A-Za-z0-9_]+)\b/g;
-    while ((m = stRe.exec(code)) !== null) {
-      targets.add(m[1]);
-    }
-
-    // Extract explicit match arm -> Outcome::Transition pairs if needed
     const armRe = /Event::([A-Za-z0-9_]+)(?:\s*\([^)]*\))?(?:\s+if\s+([^=]+?))?\s*=>\s*([\s\S]*?)(?=\n\s*(?:Event::|_ =>))/g;
     let idx = 0;
     while ((m = armRe.exec(code)) !== null) {
@@ -190,27 +222,25 @@
       let tm;
       while ((tm = trRe.exec(armBody)) !== null) {
         transitions.push({
-          name: `${toSnakeCase(stateName)}_${toSnakeCase(ev)}_${idx + 1}`,
+          name: `${toSnakeCase(ev)}_${idx + 1}`,
           srcName: stateName,
           dstName: tm[1],
           event: ev,
           guard,
           action: "",
-          priority: idx + 1,
+          reenter: false,
+          fnName: "",
         });
         idx++;
       }
     }
 
-    return { globals, events, targets, transitions };
+    return { globals, events, transitions };
   }
 
   /**
-   * Reconstruct a normalized Rusty Studio StateMachine model from a directory map
-   * of Rust files swept from GitHub (or local disk).
-   *
-   * @param {Record<string, string>} filesMap Relative file path -> UTF-8 contents
-   * @param {object} [opts] Metadata overrides ({ owner, repo, branch, dirPath, machineName })
+   * Reconstruct a normalized V3 Rusty Studio StateMachine model from a directory map
+   * of Rust files swept from GitHub (or generated crate files).
    */
   function parseCrateFilesToModel(filesMap, opts = {}) {
     const entries = Object.entries(filesMap || {}).map(([p, content]) => [
@@ -232,7 +262,6 @@
     const types = parseTypesRs(byRel.get("src/types.rs") || "");
     const machineMeta = parseMachineRs(byRel.get("src/machine.rs") || "");
 
-    // Collect state source files: either `src/states/<name>.rs` or `<name>.rs`
     const stateFileEntries = relEntries.filter(([rel]) => {
       if (!rel.endsWith(".rs")) return false;
       const base = rel.split("/").pop();
@@ -242,7 +271,7 @@
       return rel.startsWith("src/states/") || !rel.includes("/");
     });
 
-    const stateCodeByPascal = new Map();
+    const parsedHooksByPascal = new Map();
     const stateDescByPascal = new Map();
     const fallbackGlobals = new Map();
     const fallbackEvents = new Map();
@@ -251,16 +280,22 @@
     for (const [rel, code] of stateFileEntries) {
       const stem = rel.split("/").pop().replace(/\.rs$/, "");
       let pascal = toPascalCase(stem);
-      const headerMatch = /State module:\s*([A-Za-z0-9_]+)/i.exec(code);
+      const headerMatch = /(?:State hooks for:|State module:)\s*([A-Za-z0-9_]+)/i.exec(code);
       if (headerMatch) {
         pascal = toPascalCase(headerMatch[1]);
       }
       const docLines = [];
-      for (const line of code.split("\n").slice(0, 6)) {
+      for (const line of code.split("\n").slice(0, 8)) {
         const dm = /^\/\/!\s*(.+)$/.exec(line.trim());
-        if (dm && !/^State module:/i.test(dm[1])) docLines.push(dm[1].trim());
+        if (
+          dm &&
+          !/^(?:State hooks for:|State module:|Topology and guards|Control flow)/i.test(dm[1])
+        ) {
+          docLines.push(dm[1].trim());
+        }
       }
-      stateCodeByPascal.set(pascal, code);
+      const parsed = parseStateModuleRs(code);
+      parsedHooksByPascal.set(pascal, { rawCode: code, ...parsed });
       stateDescByPascal.set(pascal, docLines.join(" "));
 
       const inferred = inferFromStateSource(pascal, code);
@@ -275,8 +310,8 @@
 
     const orderedStateNames =
       types.states.length > 0
-        ? [...new Set([...types.states, ...stateCodeByPascal.keys()])]
-        : Array.from(stateCodeByPascal.keys());
+        ? [...new Set([...types.states, ...parsedHooksByPascal.keys()])]
+        : Array.from(parsedHooksByPascal.keys());
 
     if (orderedStateNames.length === 0) {
       throw new Error(
@@ -289,21 +324,24 @@
         ? machineMeta.initialState
         : orderedStateNames[0];
 
-    const states = orderedStateNames.map((name, idx) => ({
-      name,
-      description: stateDescByPascal.get(name) || "",
-      isInitial: name === initialName,
-      isFinal: false,
-      color: STATE_COLORS[idx % STATE_COLORS.length],
-      gitOwner: "",
-      gitRepo: "",
-      gitBranch: "",
-      gitPath: "",
-      code:
-        stateCodeByPascal.get(name) ||
-        contract.defaultStateCode(name, []),
-      position: { x: 120 + idx * 240, y: 160 },
-    }));
+    const states = orderedStateNames.map((name, idx) => {
+      const parsed = parsedHooksByPascal.get(name);
+      return {
+        name,
+        description: stateDescByPascal.get(name) || "",
+        isInitial: name === initialName,
+        isFinal: false,
+        color: STATE_COLORS[idx % STATE_COLORS.length],
+        gitOwner: "",
+        gitRepo: "",
+        gitBranch: "",
+        gitPath: "",
+        entryCode: parsed ? parsed.entryCode : "",
+        exitCode: parsed ? parsed.exitCode : "",
+        code: parsed ? parsed.rawCode : contract.defaultStateCode(name),
+        position: { x: 120 + idx * 240, y: 160 },
+      };
+    });
 
     const globals =
       types.globals.length > 0
@@ -312,6 +350,8 @@
             name,
             rustType,
             initialValue: "0",
+            minValue: "",
+            maxValue: "",
             description: "",
           }));
 
@@ -324,14 +364,28 @@
             description: "",
           }));
 
-    // Prefer machine.rs transition table when available, else fallback transitions from code
     const rawTransitions =
       machineMeta.transitions.length > 0 ? machineMeta.transitions : fallbackTransitions;
 
     const validStateSet = new Set(orderedStateNames);
-    const transitions = rawTransitions.filter(
-      (t) => validStateSet.has(t.srcName) && validStateSet.has(t.dstName),
-    );
+    const transitions = rawTransitions
+      .filter((t) => validStateSet.has(t.srcName) && validStateSet.has(t.dstName))
+      .map((t) => {
+        const srcHooks = parsedHooksByPascal.get(t.srcName);
+        const actionFromHook =
+          srcHooks && t.fnName && srcHooks.actionsByFnName && srcHooks.actionsByFnName[t.fnName] !== undefined
+            ? srcHooks.actionsByFnName[t.fnName]
+            : t.action || "";
+        return {
+          name: t.name,
+          srcName: t.srcName,
+          dstName: t.dstName,
+          event: t.event,
+          guard: t.guard || "",
+          action: actionFromHook,
+          reenter: Boolean(t.reenter),
+        };
+      });
 
     const inferredName =
       opts.machineName ||
@@ -353,12 +407,13 @@
       transitions,
     };
 
-    // Assign crisp layered positions via RustyLayout
+    hydrateModelStateCodes(model);
+
     if (layoutMod && typeof layoutMod.computeLayout === "function") {
       const laidOut = layoutMod.computeLayout(model, { direction: "LR" });
       for (const st of model.states) {
-        const pos = laidOut.nodesById[st.name];
-        if (pos) st.position = { x: pos.x, y: pos.y };
+        const box = laidOut.nodesById[st.name];
+        if (box) st.position = { x: box.x, y: box.y };
       }
     }
 
@@ -366,18 +421,17 @@
       model,
       summary: {
         states: model.states.length,
-        transitions: model.transitions.length,
         globals: model.globals.length,
         events: model.events.length,
-        sourceFiles: stateFileEntries.map(([r]) => r),
+        transitions: model.transitions.length,
       },
     };
   }
 
   return {
-    parseCrateFilesToModel,
     parseCargoToml,
     parseTypesRs,
     parseMachineRs,
+    parseCrateFilesToModel,
   };
 });

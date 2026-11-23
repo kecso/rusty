@@ -51,6 +51,7 @@ export default defineConfig({
         text: "Concepts & Reference",
         items: [
           { text: "WebGME + Git Architecture", link: "/concepts/architecture" },
+          { text: "Model-Driven Architecture & Guards", link: "/concepts/model-driven-architecture" },
           { text: "Rust State Contract", link: "/concepts/state-contract" },
           { text: "Fork & Dev Branch Sync", link: "/concepts/git-workflow" },
           { text: "WebGME Metamodel", link: "/reference/metamodel" },

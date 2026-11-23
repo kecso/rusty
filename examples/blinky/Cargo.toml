@@ -2,7 +2,7 @@
 name = "blinky-controller"
 version = "0.1.0"
 edition = "2021"
-description = "Hello-world Rust state machine demonstrating WebGME topology + webgme-git Rust state files + dynamic simulation."
+description = "Model-driven Rust state machine demonstrating pure Entry/Exit hooks, mutually exclusive guards, and native cargo parity."
 
 [lib]
 name = "blinky_controller"

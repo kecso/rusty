@@ -5,7 +5,7 @@ const assert = require("node:assert/strict");
 const { getStarterBlinkyModel } = require("../src/common/rustContract");
 const { createSimulation } = require("../src/common/rustSimEngine");
 
-describe("RustySimEngine (dynamic browser simulator)", () => {
+describe("RustySimEngine (V3 model-driven browser simulator)", () => {
   it("initializes BlinkyController in Idle with led_high=false", () => {
     const model = getStarterBlinkyModel();
     const sim = createSimulation(model);
@@ -18,7 +18,7 @@ describe("RustySimEngine (dynamic browser simulator)", () => {
     assert.equal(snap.globals.temperature_c, 28);
   });
 
-  it("executes full blink cycle and returns to Idle after max_blinks", () => {
+  it("executes full blink cycle purely from model transitions and returns to Idle after max_blinks", () => {
     const model = getStarterBlinkyModel();
     const sim = createSimulation(model);
 
@@ -65,11 +65,42 @@ describe("RustySimEngine (dynamic browser simulator)", () => {
     sim.dispatch("Tick");
     assert.equal(sim.getSnapshot().currentState, "Fault");
 
-    // Reset returns to Idle and resets counters
+    // Reset runs transition action and re-enters Idle cleanly
     sim.dispatch("Reset");
     const snap = sim.getSnapshot();
     assert.equal(snap.currentState, "Idle");
     assert.equal(snap.globals.blink_count, 0);
     assert.equal(snap.globals.temperature_c, 28);
+  });
+
+  it("respects self-transition stay vs re-enter lifecycle semantics", () => {
+    const model = {
+      name: "SelfTest",
+      globals: [{ name: "ticks", rustType: "u32", initialValue: "0" }],
+      events: [
+        { name: "StayTick", payloadType: "" },
+        { name: "ReenterTick", payloadType: "" },
+      ],
+      states: [
+        {
+          name: "Active",
+          isInitial: true,
+          entryCode: "globals.ticks = 0;",
+          exitCode: "",
+        },
+      ],
+      transitions: [
+        { name: "bump", srcName: "Active", dstName: "Active", event: "StayTick", guard: "", action: "globals.ticks += 1;", reenter: false },
+        { name: "reset_re", srcName: "Active", dstName: "Active", event: "ReenterTick", guard: "", action: "", reenter: true },
+      ],
+    };
+
+    const sim = createSimulation(model);
+    sim.dispatch("StayTick");
+    sim.dispatch("StayTick");
+    assert.equal(sim.getSnapshot().globals.ticks, 2);
+
+    sim.dispatch("ReenterTick");
+    assert.equal(sim.getSnapshot().globals.ticks, 0);
   });
 });

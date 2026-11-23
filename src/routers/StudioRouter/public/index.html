@@ -173,14 +173,14 @@
       <!-- Right Pane: Inspector / Rust Code Editor / Dynamic Simulator -->
       <aside id="rightPane" class="right-pane">
         <div class="right-tabs">
-          <button class="tab-btn active" data-right-tab="inspector">Inspector &amp; Rust</button>
+          <button class="tab-btn active" data-right-tab="inspector">Inspector</button>
           <button class="tab-btn" data-right-tab="simulator">Simulator</button>
         </div>
 
         <!-- Tab 1: Node Inspector + Rust State Editor -->
         <div id="tabInspector" class="right-content active">
           <div id="inspectorEmpty" class="empty-state">
-            Select a <strong>State</strong> or <strong>Transition</strong> on the diagram to edit its design properties, guards, dependencies, and Rust code.
+            Select a <strong>State</strong> (Entry/Exit hooks &amp; Outgoing Transitions) or a <strong>Transition</strong> (Guard Exclusivity &amp; Action hook) on the diagram.
           </div>
 
           <!-- State Inspector -->
@@ -236,25 +236,38 @@
             </div>
 
             <div class="subsection code-section">
-              <div class="subsection-title">
-                <span>Rust State Code (Monaco · <code>⌘S</code> Save / Sync)</span>
+              <div class="hook-tabs" id="stateHookTabs">
+                <button type="button" class="hook-tab active" data-state-hook="entry">Entry</button>
+                <button type="button" class="hook-tab" data-state-hook="exit">Exit</button>
+                <button type="button" class="hook-tab" data-state-hook="transitions">
+                  Transitions <span id="stateTransCount" class="count-pill">0</span>
+                </button>
+              </div>
+
+              <div id="stateHookCodePane">
+                <div class="subsection-title" style="margin-top:6px;">
+                  <span id="stateHookSubtitle" class="muted-mono">on_enter · surrounding file read-only</span>
+                  <div class="btn-row">
+                    <span id="gitFetchStatus" class="muted-mono"></span>
+                    <button id="btnExpandEditor" class="btn btn-xs" title="Widen editor pane">⇔ Wide</button>
+                  </div>
+                </div>
+                <div id="monacoEditorHost" class="monaco-host"></div>
+                <div class="analyzer-bar">
+                  <span id="analyzerStatusBadge" class="badge badge-ok">✓ 0 errors</span>
+                  <span id="analyzerLatency" class="muted-mono"></span>
+                  <span id="codeDirtyHint" class="muted-mono"></span>
+                </div>
+                <ul id="editorProblemsList" class="problems-list hidden"></ul>
                 <div class="btn-row">
-                  <span id="gitFetchStatus" class="muted-mono"></span>
-                  <button id="btnExpandEditor" class="btn btn-xs" title="Widen editor pane">⇔ Wide</button>
-                  <button id="btnResetStateTemplate" class="btn btn-xs">Template</button>
+                  <button id="btnCommitState" class="btn btn-xs btn-accent hidden" title="Save hook + atomic Commit & Push composed .rs file to GitHub (Cmd/Ctrl+S)">↑ Save &amp; Push (⌘S)</button>
+                  <button id="btnSaveCodeCache" class="btn btn-xs btn-primary">Save Hook (⌘S)</button>
+                  <button id="btnPullState" class="btn btn-xs hidden" title="Reload latest content from GitHub">↓ Reload from Git</button>
                 </div>
               </div>
-              <div id="monacoEditorHost" class="monaco-host"></div>
-              <div class="analyzer-bar">
-                <span id="analyzerStatusBadge" class="badge badge-ok">✓ 0 errors</span>
-                <span id="analyzerLatency" class="muted-mono"></span>
-                <span id="codeDirtyHint" class="muted-mono"></span>
-              </div>
-              <ul id="editorProblemsList" class="problems-list hidden"></ul>
-              <div class="btn-row">
-                <button id="btnCommitState" class="btn btn-xs btn-accent hidden" title="Save to WebGME + atomic Commit & Push to GitHub (Cmd/Ctrl+S)">↑ Save &amp; Push (⌘S)</button>
-                <button id="btnSaveCodeCache" class="btn btn-xs btn-primary">Save Code (⌘S)</button>
-                <button id="btnPullState" class="btn btn-xs hidden" title="Reload latest content from GitHub">↓ Reload from Git</button>
+
+              <div id="stateTransitionsPane" class="hidden" style="margin-top:6px;">
+                <div id="stateOutgoingList" class="outgoing-list"></div>
               </div>
             </div>
           </div>
@@ -271,40 +284,75 @@
 
             <div id="transImpactBox" class="impact-box hidden"></div>
 
-            <label class="form-row">
-              <span>Name</span>
-              <input id="inpTransName" type="text" />
-            </label>
             <div class="form-grid">
+              <label>
+                <span>Short Name (for <code>tr_*</code> fn)</span>
+                <input id="inpTransName" type="text" placeholder="e.g. heat_step" />
+              </label>
               <label>
                 <span>Trigger Event</span>
                 <input id="inpTransEvent" type="text" list="eventNameSuggestions" />
                 <datalist id="eventNameSuggestions"></datalist>
               </label>
-              <label>
-                <span>Priority</span>
-                <input id="inpTransPriority" type="number" />
+            </div>
+            <div id="transReenterRow" class="checkbox-row hidden">
+              <label title="By default, self-transitions stay in state and run only their Action without firing Exit/Entry">
+                <input id="inpTransReenter" type="checkbox" /> Re-enter state (fire Exit → Action → Entry)
               </label>
             </div>
-            <label class="form-row">
-              <span>Rust Guard Expression (optional, compiled into <code>src/machine.rs</code>)</span>
-              <input id="inpTransGuard" type="text" placeholder="e.g. globals.blink_count >= globals.max_blinks" />
-            </label>
-            <ul id="transGuardDiag" class="problems-list hidden"></ul>
-            <label class="form-row">
-              <span>Action Statement (optional)</span>
-              <input id="inpTransAction" type="text" placeholder="e.g. globals.blink_count = 0;" />
-            </label>
 
             <div class="subsection">
-              <div class="subsection-title">
-                <span>Guard Dependencies (<code>dependsOn</code> Set)</span>
+              <div class="hook-tabs" id="transTabBar">
+                <button type="button" class="hook-tab active" data-trans-tab="guard">Guard &amp; Exclusivity</button>
+                <button type="button" class="hook-tab" data-trans-tab="action">Action Hook</button>
               </div>
-              <div id="transDependsOnList" class="deps-chips"></div>
-            </div>
 
-            <div class="btn-row">
-              <button id="btnSaveTransition" class="btn btn-xs btn-primary">Save Transition to WebGME</button>
+              <!-- Sub-tab 1: Guard Expression + Mutual Exclusivity Proof -->
+              <div id="tabTransGuard" style="display:flex;flex-direction:column;gap:9px;margin-top:6px;">
+                <label class="form-row">
+                  <span>Pure Guard Expression (compiled into <code>src/machine.rs</code>)</span>
+                  <textarea id="inpTransGuard" rows="2" class="guard-input" placeholder="(unconditional — leave empty if no guard needed)"></textarea>
+                </label>
+                <div id="transGuardHint" class="muted-mono"></div>
+                <ul id="transGuardDiag" class="problems-list hidden"></ul>
+
+                <div id="transDeterminismBox" class="determinism-box ok"></div>
+
+                <div class="form-row">
+                  <span>Generated Rust Guard Preview</span>
+                  <code id="transGuardRustPreview" class="guard-preview">true</code>
+                </div>
+
+                <div>
+                  <div class="subsection-title" style="margin-bottom:4px;">
+                    <span>Dependencies (<code>dependsOn</code> Set)</span>
+                  </div>
+                  <div id="transDependsOnList" class="deps-chips"></div>
+                </div>
+
+                <div class="btn-row">
+                  <button id="btnSaveTransition" class="btn btn-xs btn-primary">Save Guard &amp; Metadata</button>
+                </div>
+              </div>
+
+              <!-- Sub-tab 2: Contextual Read-Only Monaco Action Editor -->
+              <div id="tabTransAction" class="hidden" style="display:flex;flex-direction:column;gap:8px;margin-top:6px;">
+                <div class="subsection-title">
+                  <span id="transActionSubtitle" class="muted-mono">tr_* inside src/states/*.rs · other lines read-only</span>
+                  <button id="btnExpandTransEditor" class="btn btn-xs" title="Widen editor pane">⇔ Wide</button>
+                </div>
+                <div id="transMonacoHost" class="monaco-host"></div>
+                <div class="analyzer-bar">
+                  <span id="transActionBadge" class="badge badge-ok">✓ 0 errors</span>
+                  <span id="transActionLatency" class="muted-mono"></span>
+                  <span id="transActionDirtyHint" class="muted-mono"></span>
+                </div>
+                <ul id="transActionProblemsList" class="problems-list hidden"></ul>
+                <div class="btn-row">
+                  <button id="btnCommitTransAction" class="btn btn-xs btn-accent hidden" title="Save transition action + Push composed state .rs file to GitHub (Cmd/Ctrl+S)">↑ Save &amp; Push (⌘S)</button>
+                  <button id="btnSaveTransAction" class="btn btn-xs btn-primary">Save Action (⌘S)</button>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -495,6 +543,7 @@
   <script src="/gme-dist/webgme.classes.build.js"></script>
   <!-- Shared Rusty Common Modules -->
   <script src="/routers/studio/common/rustContract.js"></script>
+  <script src="/routers/studio/common/rustGuardLang.js"></script>
   <script src="/routers/studio/common/rustCodegen.js"></script>
   <script src="/routers/studio/common/rustSimEngine.js"></script>
   <script src="/routers/studio/common/rustAnalyzer.js"></script>

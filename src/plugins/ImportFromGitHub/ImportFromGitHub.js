@@ -138,6 +138,8 @@ define([
         core.setAttribute(gNode, "name", g.name);
         core.setAttribute(gNode, "rustType", g.rustType || "i32");
         core.setAttribute(gNode, "initialValue", String(g.initialValue ?? "0"));
+        core.setAttribute(gNode, "minValue", String(g.minValue ?? ""));
+        core.setAttribute(gNode, "maxValue", String(g.maxValue ?? ""));
         core.setAttribute(gNode, "description", g.description || "");
         const gp = core.getPath(gNode);
         targetsByPath.set(gp, gNode);
@@ -164,6 +166,8 @@ define([
         core.setAttribute(sNode, "isInitial", Boolean(st.isInitial));
         core.setAttribute(sNode, "isFinal", Boolean(st.isFinal));
         core.setAttribute(sNode, "color", st.color || "#38bdf8");
+        core.setAttribute(sNode, "entryCode", st.entryCode || "");
+        core.setAttribute(sNode, "exitCode", st.exitCode || "");
         core.setAttribute(sNode, "codeCache", st.code || "");
         core.setAttribute(sNode, "gitOwner", "");
         core.setAttribute(sNode, "gitRepo", "");
@@ -181,7 +185,7 @@ define([
 
       for (const st of modelStates) {
         const sNode = stateByName.get(st.name);
-        const deps = analyzer.extractDependencies(st.code || "", modelWithIds);
+        const deps = analyzer.extractDependencies(`${st.entryCode || ""}\n${st.exitCode || ""}`, modelWithIds);
         core.setAttribute(sNode, "depsSignature", analyzer.serializeDepsSnapshot(deps.snapshot));
         core.createSet(sNode, "dependsOn");
         for (const mid of deps.memberIds) {
@@ -198,10 +202,14 @@ define([
         core.setAttribute(tNode, "event", tr.event);
         core.setAttribute(tNode, "guard", tr.guard || "");
         core.setAttribute(tNode, "action", tr.action || "");
-        core.setAttribute(tNode, "priority", Number(tr.priority ?? 1));
+        core.setAttribute(tNode, "reenter", Boolean(tr.reenter));
         core.setPointer(tNode, "src", srcNode);
         core.setPointer(tNode, "dst", dstNode);
-        const deps = analyzer.extractDependencies(tr.guard || "", modelWithIds, { triggerEvent: tr.event });
+        const deps = analyzer.extractDependencies("", modelWithIds, {
+          triggerEvent: tr.event,
+          guardText: tr.guard || "",
+          actionText: tr.action || "",
+        });
         core.setAttribute(tNode, "depsSignature", analyzer.serializeDepsSnapshot(deps.snapshot));
         core.createSet(tNode, "dependsOn");
         for (const mid of deps.memberIds) {

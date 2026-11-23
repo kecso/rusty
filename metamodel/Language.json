@@ -76,6 +76,8 @@
         "isInitial": false,
         "isFinal": false,
         "color": "#38bdf8",
+        "entryCode": "",
+        "exitCode": "",
         "codeCache": "",
         "depsSignature": "",
         "gitArtifactType": "file"
@@ -86,6 +88,8 @@
         "isInitial": { "type": "boolean" },
         "isFinal": { "type": "boolean" },
         "color": { "type": "string" },
+        "entryCode": { "type": "string" },
+        "exitCode": { "type": "string" },
         "codeCache": { "type": "string" },
         "depsSignature": { "type": "string" }
       },
@@ -105,16 +109,16 @@
         "event": "Tick",
         "guard": "",
         "action": "",
-        "depsSignature": "",
-        "priority": 1
+        "reenter": false,
+        "depsSignature": ""
       },
       "attribute_meta": {
         "name": { "type": "string" },
         "event": { "type": "string" },
         "guard": { "type": "string" },
         "action": { "type": "string" },
-        "depsSignature": { "type": "string" },
-        "priority": { "type": "integer" }
+        "reenter": { "type": "boolean" },
+        "depsSignature": { "type": "string" }
       },
       "pointers": {
         "base": "/1"
@@ -143,6 +147,8 @@
         "name": "GlobalVar",
         "rustType": "i32",
         "initialValue": "0",
+        "minValue": "",
+        "maxValue": "",
         "description": ""
       },
       "attribute_meta": {
@@ -152,6 +158,8 @@
           "enum": ["bool", "i32", "i64", "u32", "f64", "String"]
         },
         "initialValue": { "type": "string" },
+        "minValue": { "type": "string" },
+        "maxValue": { "type": "string" },
         "description": { "type": "string" }
       },
       "pointers": {

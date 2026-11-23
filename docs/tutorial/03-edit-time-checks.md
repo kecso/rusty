@@ -1,52 +1,62 @@
-# Tutorial 2: Edit-Time Checks, Guards & Design Impact Tracking
+# Tutorial 2: Guard Proofs, Edit-Time Checks & Design Impact
 
-Rusty Studio pairs embedded **Monaco Editor** (`0.57.0`) with **`RustyAnalyzer`** (`src/common/rustAnalyzer.js`) and WebGME **`dependsOn` Set tracking** so mistakes are caught immediately—whether you are editing Rust code or reshaping the machine design.
+Rusty guarantees three continuous layers of safety in **Real-Time Browser Analysis** (`< 1 ms`) backed by real **`rustc`** diagnostics.
 
-![Design impact tracking, Monaco edit-time checks, and rustc verification](/images/demo-monaco-edit-checks.gif)
+![Guard proofs, contextual read-only Monaco edit-time checks, and rustc verification](/images/demo-monaco-edit-checks.gif)
 
-## Continuous Two-Way Protection
+## Layer 1 — Pure Guard Syntax & Mutual-Exclusivity Proofs
 
-1. **Code → Design Checks (as you type in `< 1 ms`)**:
-   - Autocomplete and inline red/yellow squiggles for shared variables, event payloads, transition targets, and transition guard expressions.
-   - Clickable **Problems** list below Monaco + full **`✓ Verify with rustc`** overlay.
-2. **Design → Code Impact Tracking (`dependsOn` WebGME Set)**:
-   - Every State and Transition records which `GlobalVar`, `EventDef`, and `State` elements its Rust code or guard references (`dependsOn` Set + `depsSignature`).
-   - Whenever you **rename**, **retype**, or **delete** an element in the left Explorer, Rusty immediately flags every affected state and transition in the **⚠ Design Impact Banner**, on the diagram nodes/badges, and inside the Inspector so nothing silently breaks until integration testing.
+Select **`Heating ↺ Heating` (`heat_step`)** in `SmartThermostat` and look at the **`Guard & Exclusivity`** tab:
 
-## Hands-On Exercises (`SmartThermostat`)
+1. **Pure Guard Typing**:
+   - Guards accept `GlobalVar` names directly (`current_temp_c`, `cycle_ticks`), typed literals, numeric arithmetic (`+`, `-`, `*`), comparisons, and boolean logic (`&&`, `||`, `!`).
+   - Try typing an assignment `current_temp_c = 25.0` → instant **`RUSTY_G002`** error (`Assignment '=' is not allowed in guards`).
+   - Try comparing `cycle_ticks < 40.0` (`u32` vs `f64`) → instant **`RUSTY_E003`** type mismatch.
+2. **Concrete Overlap Counterexample**:
+   - Temporarily remove the upper guard clauses on `heat_step` so the guard becomes just `current_temp_c < target_temp_c + hysteresis_c`.
+   - `RustyGuardLang` tests `heat_step` against sibling `Heating → Cooldown` (`current_temp_c >= 40.0 || cycle_ticks >= max_cycle_ticks`) using **DNF + exact BigInt Rational Fourier-Motzkin Elimination + Integer Branch-and-Bound**.
+   - The **`Guard & Exclusivity`** box immediately turns red (**`✕ Non-Deterministic Guard Overlap!`**) and displays a verified concrete counterexample where both transitions would fire simultaneously!
+   - Undo the edit to restore **`✓ Proven Mutually Exclusive`**.
 
-Select **`SmartThermostat`** → **`Heating`** in Rusty Studio and try the exercises below:
+## Layer 2 — Contextual Read-Only Monaco & Hook Checks
 
-### Exercise 1: Trigger Live Design-to-Code Impact (`dependsOn` Set)
+Open **`Action Hook`** on `heat_step` (or **`Entry`** on state **`Heating`**) to inspect `src/states/heating.rs`:
 
-1. In the left **Globals** list, click **`✎`** on **`max_cycle_ticks`**.
-2. Rename it to **`duty_limit`** and click **Apply to Design**.
-3. Immediately observe:
-   - The **⚠ Design Impact** banner appears above the diagram with clickable chips for **`Heating`**, **`Cooling`**, and any affected guards.
-   - Both diagram boxes light up with `⚠` badges and sidebar warnings.
-   - Changing a global's type (e.g., `eco_mode` from `bool` to `i32`) flags a `DESIGN_TYPE_CHANGED` review alert even before running `cargo`.
-4. Click **`✎`** on `duty_limit` and restore **`max_cycle_ticks`**—all impact warnings clear immediately.
+### Exercise 1: Verify Strictly Read-Only Surrounding Code
 
-### Exercise 2: Validate Transition Guards Live
+- Notice that lines outside `tr_heat_step` (`#![allow(unused_variables)]`, `use crate::types::Globals;`, `pub fn on_enter`, signatures, and sibling functions) are dimmed and locked.
+- Clicking or trying to type/Backspace on a header or signature line is blocked cleanly with a toast reminder (`Surrounding state file lines are strictly read-only — edit only inside the active hook body`).
 
-1. Click any guarded transition badge on the diagram (such as **`B ⚑`** from `Standby → Heating`).
-2. In the right **Transition Inspector**, edit **Rust Guard Expression** to introduce a typo (`globals.target_tem_c`) or mismatched sign (`globals.cycle_ticks == -1`).
-3. Live guard diagnostics appear immediately below the input with typo hints (`RUSTY_E001` / `RUSTY_E003`), and saving updates the Transition's `dependsOn` Set automatically.
+### Exercise 2: Catch Global Variable Typos (`RUSTY_E001`)
 
-### Exercise 3: Catch Misspelled Globals & Type Errors in Monaco
+Inside `tr_heat_step`, change `globals.eco_mode` to `globals.eco_mde`:
+- Instant squiggle appears under `eco_mde`:
+  `[RUSTY_E001] Unknown global variable globals.eco_mde. Did you mean globals.eco_mode?`
 
-In **`Heating`**, temporarily change `globals.eco_mode` to `globals.eco_mde` and add `globals.cycle_ticks = -1;`:
+### Exercise 3: Catch Numeric Domain Errors (`RUSTY_E003`) & `rustc`
 
-- Within ~55ms, Monaco highlights both with red squiggles and lists `RUSTY_E001` and `RUSTY_E003` in the clickable **Problems** list.
+Assign `-1` to `u32` field `globals.cycle_ticks`:
 
-### Exercise 4: Catch Payload & Topology Mismatches (`RUSTY_E012`, `RUSTY_W013`, `RUSTY_W021`)
+```rust
+globals.cycle_ticks = -1;
+```
 
-- Returning `Outcome::Emit(Event::SetTarget("warm"))` flags payload type mismatch (`RUSTY_E012`).
-- Emitting `Event::ToggleEco` without handling it warns `RUSTY_W013`.
-- Returning `Outcome::Transition(StateId::Cooling)` from `Heating` warns `RUSTY_W021` because no matching edge exists on the diagram.
+- Instant `RustyAnalyzer` error flags the negative literal assignment to unsigned `u32`.
+- Click **`✓ Verify with rustc`** — real `cargo check` underlines the exact line in `src/states/heating.rs`.
 
-### Exercise 5: Verify with Real `rustc`
+### Exercise 4: Catch Forbidden Control Flow & Invalid Payloads (`RUSTY_E040`, `RUSTY_E041`)
 
-Click **`✓ Verify with rustc`** in the top bar—Studio compiles the complete generated crate on the server and overlays genuine `cargo check` compiler markers directly in Monaco.
+- Try writing `StateId::Cooldown` or `Event::Tick` inside any hook → instant **`RUSTY_E040`** (`Control-flow reference is forbidden inside hook code — transitions and events belong strictly to the design`).
+- Try referencing `payload` inside `on_enter`, `on_exit`, or a unit-event transition (`Tick`) → instant **`RUSTY_E041`**.
 
-See [Reference: Edit-Time & Impact Diagnostics](../reference/diagnostics.md) for every diagnostic code.
+## Layer 3 — Reactive Design-to-Code Impact (`dependsOn` Set)
+
+When **design** elements change, Studio knows every hook and guard that depends on them:
+
+1. In **Globals**, rename **`max_cycle_ticks`** to **`duty_limit`** (and save).
+2. Immediately:
+   - An amber **Design Impact Banner** lists every impacted **State** and **Transition** whose `dependsOn` Set references that `GlobalVar`.
+   - Every impacted item shows a warning badge (`⚠ N`) in the explorer and Inspector until its guard (`cycle_ticks < max_cycle_ticks`) and code are updated or resolved.
+3. Restore `max_cycle_ticks` to clear all impact warnings cleanly.
+
+See [Reference: Edit-Time & Impact Diagnostics](../reference/diagnostics.md) for the complete diagnostic code catalog.

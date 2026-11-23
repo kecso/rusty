@@ -122,7 +122,10 @@
 
       const layout =
         global.RustyLayout && typeof global.RustyLayout.computeLayout === "function"
-          ? global.RustyLayout.computeLayout(this.model, { direction: this.layoutDirection })
+          ? global.RustyLayout.computeLayout(this.model, {
+              direction: this.layoutDirection,
+              compactLabels: this.compactLabels,
+            })
           : { width: 880, height: 480, nodesById: {}, edgesById: {} };
 
       this.svg.setAttribute("viewBox", `0 0 ${layout.width} ${layout.height}`);
@@ -146,7 +149,10 @@
       for (const tr of transitions) {
         const src = statesById.get(tr.srcId);
         const dst = statesById.get(tr.dstId);
-        const edgeGeom = layout.edgesById[tr.id] || layout.edgesById[tr.name];
+        const edgeGeom =
+          layout.edgesById[tr.id] ||
+          layout.edgesById[`${tr.srcId || tr.srcName}->${tr.dstId || tr.dstName}:${tr.event || ""}:${tr.name || ""}`] ||
+          layout.edgesById[tr.name];
         if (!src || !dst || !edgeGeom) continue;
         transLayer.appendChild(this._renderTransition(tr, edgeGeom));
       }
@@ -190,9 +196,12 @@
         dash: "3 3",
         index: -1,
       };
+      const trLookupId =
+        tr.id || (global.RustyContract && global.RustyContract.transitionKey(tr)) || tr.name;
       const impactItem =
-        this.impact && this.impact.byTransitionId ? this.impact.byTransitionId[tr.id] : null;
+        this.impact && this.impact.byTransitionId ? this.impact.byTransitionId[trLookupId] : null;
       const isImpacted = Boolean(impactItem);
+      const isErrorImpact = Boolean(impactItem && impactItem.errors > 0);
 
       const isEventHighlight =
         this.highlightEventName &&
@@ -213,11 +222,13 @@
 
       const strokeColor = isFired
         ? "#f97316"
-        : isSelected
-          ? "#38bdf8"
-          : isImpacted
-            ? "#f59e0b"
-            : evStyle.color;
+        : isErrorImpact
+          ? "#ef4444"
+          : isSelected
+            ? "#38bdf8"
+            : isImpacted
+              ? "#f59e0b"
+              : evStyle.color;
       const arrowId = isFired
         ? "arrow-fired"
         : isSelected

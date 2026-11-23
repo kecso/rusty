@@ -1,13 +1,13 @@
 (function (root, factory) {
   if (typeof module === "object" && module.exports) {
-    module.exports = factory(require("./rustContract"));
+    module.exports = factory(require("./rustContract"), require("./rustGuardLang"));
   } else {
-    root.RustySimEngine = factory(root.RustyContract);
+    root.RustySimEngine = factory(root.RustyContract, root.RustyGuardLang);
   }
-})(typeof globalThis !== "undefined" ? globalThis : this, function (contract) {
+})(typeof globalThis !== "undefined" ? globalThis : this, function (contract, guardLang) {
   "use strict";
 
-  const { toSnakeCase, toPascalCase } = contract;
+  const { toSnakeCase, toPascalCase, compareTransitions, getStateHookBodies } = contract;
 
   function parseInitialValue(rustType, rawVal) {
     const t = String(rustType || "i32").trim();
@@ -103,13 +103,31 @@
     return -1;
   }
 
+  function findMatchingBrace(str, openIdx) {
+    let depth = 0;
+    let inStr = false;
+    for (let i = openIdx; i < str.length; i++) {
+      const ch = str[i];
+      if (ch === '"' && str[i - 1] !== "\\") {
+        inStr = !inStr;
+        continue;
+      }
+      if (inStr) continue;
+      if (ch === "{") depth++;
+      else if (ch === "}") {
+        depth--;
+        if (depth === 0) return i;
+      }
+    }
+    return -1;
+  }
+
   function translateRustIfExpr(expr) {
     let out = String(expr || "");
     for (let guard = 0; guard < 32; guard++) {
       const found = findNextOutsideStrings(out, /\bif\b(?=\s|\()/);
       if (!found) break;
       const ifIdx = found.index;
-      // Ensure `if` is not part of an identifier
       if (ifIdx > 0 && /[a-zA-Z0-9_]/.test(out[ifIdx - 1])) break;
       const brace1 = out.indexOf("{", ifIdx + 2);
       if (brace1 === -1) break;
@@ -153,7 +171,6 @@
           }
           pos--;
         }
-        // Include preceding function name or receiver chain if any
         continue;
       }
       break;
@@ -163,7 +180,7 @@
 
   function translateRustMethods(expr) {
     let out = String(expr || "");
-    const methodRe = /^\.(round|abs|floor|ceil|clamp|min|max)\s*\(/;
+    const methodRe = /^\.(round|abs|floor|ceil|clamp|min|max|to_string|len|trim)\s*\(/;
     for (let guard = 0; guard < 64; guard++) {
       const found = findNextOutsideStrings(out, methodRe);
       if (!found) break;
@@ -176,9 +193,15 @@
       const recvStart = findReceiverStart(out, dotIdx);
       const recv = out.slice(recvStart, dotIdx).trim();
       const argsStr = out.slice(openParen + 1, closeParen).trim();
-      const replacement = argsStr
-        ? `__r_${method}(${recv}, ${argsStr})`
-        : `__r_${method}(${recv})`;
+      let replacement;
+      if (method === "to_string") replacement = `String(${recv})`;
+      else if (method === "len") replacement = `String(${recv}).length`;
+      else if (method === "trim") replacement = `String(${recv}).trim()`;
+      else {
+        replacement = argsStr
+          ? `__r_${method}(${recv}, ${argsStr})`
+          : `__r_${method}(${recv})`;
+      }
       out = out.slice(0, recvStart) + replacement + out.slice(closeParen + 1);
     }
     return out;
@@ -188,29 +211,9 @@
     const trimmed = String(expr || "").trim();
     if (!trimmed) return undefined;
 
-    // Outcome::Transition(StateId::Foo)
-    const transMatch = /^Outcome::Transition\s*\(\s*StateId::([A-Za-z0-9_]+)\s*\)$/.exec(trimmed);
-    if (transMatch) {
-      return { __outcome: "Transition", target: transMatch[1] };
-    }
-    // Outcome::Emit(Event::Foo) or Outcome::Emit(Event::Foo(expr))
-    const emitMatch = /^Outcome::Emit\s*\(\s*Event::([A-Za-z0-9_]+)(?:\s*\(([\s\S]*)\))?\s*\)$/.exec(trimmed);
-    if (emitMatch) {
-      const payloadVal =
-        emitMatch[2] !== undefined && emitMatch[2].trim() !== ""
-          ? evalRustExpr(emitMatch[2], globals, localVars)
-          : undefined;
-      return { __outcome: "Emit", event: emitMatch[1], payload: payloadVal };
-    }
-    if (trimmed === "Outcome::Stay") {
-      return { __outcome: "Stay" };
-    }
-
-    // String::from("...")
     const strFrom = /^String::from\s*\(\s*"((?:[^"\\]|\\.)*)"\s*\)$/.exec(trimmed);
     if (strFrom) return strFrom[1];
 
-    // Safe JS expression translation for Rust arithmetic/boolean/comparison expressions
     let jsExpr = trimmed
       .replace(/\btrue\b/g, "true")
       .replace(/\bfalse\b/g, "false")
@@ -221,7 +224,6 @@
     jsExpr = translateRustIfExpr(jsExpr);
     jsExpr = translateRustMethods(jsExpr);
 
-    // Allow only safe characters & identifiers (no Function/window/process/eval/assignment)
     if (/\b(?:window|globalThis|process|require|import|eval|Function|fetch|constructor|__proto__|prototype)\b/.test(jsExpr)) {
       throw new Error(`Disallowed identifier in Rust expression: ${trimmed}`);
     }
@@ -253,60 +255,20 @@
     );
   }
 
-  function findMatchingBrace(str, openIdx) {
-    let depth = 0;
-    let inStr = false;
-    for (let i = openIdx; i < str.length; i++) {
-      const ch = str[i];
-      if (ch === '"' && str[i - 1] !== "\\") {
-        inStr = !inStr;
-        continue;
-      }
-      if (inStr) continue;
-      if (ch === "{") depth++;
-      else if (ch === "}") {
-        depth--;
-        if (depth === 0) return i;
-      }
-    }
-    return -1;
-  }
-
-  function executeBlock(blockStr, globals, eventInfo, localVars, logs) {
-    let src = String(blockStr || "").trim();
+  function executeBlock(blockStr, globals, localVars, logs) {
+    const src = stripComments(String(blockStr || "")).trim();
     let i = 0;
-    let lastValue = undefined;
 
     while (i < src.length) {
       while (i < src.length && /\s/.test(src[i])) i++;
       if (i >= src.length) break;
 
-      // 1. match event { ... }
-      if (src.slice(i).startsWith("match ")) {
-        const braceIdx = src.indexOf("{", i);
-        if (braceIdx === -1) break;
-        const closeIdx = findMatchingBrace(src, braceIdx);
-        if (closeIdx === -1) break;
-        const matchBody = src.slice(braceIdx + 1, closeIdx);
-        const result = executeMatchEvent(matchBody, globals, eventInfo, localVars, logs);
-        lastValue = result;
-        if (result && result.__outcome) return result;
-        i = closeIdx + 1;
-        if (src[i] === ";") i++;
-        continue;
-      }
-
-      // 2. if cond { ... } [else if cond { ... }] [else { ... }]
       if (/^if\b/.test(src.slice(i))) {
-        const res = executeIfChain(src, i, globals, eventInfo, localVars, logs);
-        lastValue = res.value;
-        if (lastValue && lastValue.__outcome) return lastValue;
-        i = res.nextIdx;
+        i = executeIfChain(src, i, globals, localVars, logs);
         if (src[i] === ";") i++;
         continue;
       }
 
-      // 3. Statement ending with ';' or end of block
       let stmtEnd = -1;
       let parenDepth = 0;
       let braceDepth = 0;
@@ -329,23 +291,14 @@
       i = stmtEnd === -1 ? src.length : stmtEnd + 1;
       if (!stmt) continue;
 
-      // Ignore `let _ = globals;`
       if (/^let\s+_\s*=/.test(stmt)) continue;
 
-      // Local let binding: `let x = expr` or `let x: T = expr`
       const letMatch = /^let\s+(?:mut\s+)?([a-zA-Z_][a-zA-Z0-9_]*)(?:\s*:\s*[^=]+)?\s*=\s*([\s\S]+)$/.exec(stmt);
       if (letMatch) {
         localVars[letMatch[1]] = evalRustExpr(letMatch[2], globals, localVars);
         continue;
       }
 
-      // return expr
-      const retMatch = /^return\s+([\s\S]+)$/.exec(stmt);
-      if (retMatch) {
-        return evalRustExpr(retMatch[1], globals, localVars);
-      }
-
-      // Compound or simple assignment to globals.field
       const assignMatch = /^globals\.([a-zA-Z_][a-zA-Z0-9_]*)\s*(\+=|-=|\*=|\/=|=)\s*([\s\S]+)$/.exec(stmt);
       if (assignMatch) {
         const field = assignMatch[1];
@@ -358,20 +311,12 @@
         else if (op === "/=") globals[field] = rhs !== 0 ? globals[field] / rhs : globals[field];
         continue;
       }
-
-      // Standalone expression (e.g. Outcome::Transition(...) or Outcome::Stay)
-      const val = evalRustExpr(stmt, globals, localVars);
-      lastValue = val;
-      if (val && val.__outcome) return val;
     }
-
-    return lastValue;
   }
 
-  function executeIfChain(src, startIdx, globals, eventInfo, localVars, logs) {
+  function executeIfChain(src, startIdx, globals, localVars, logs) {
     let idx = startIdx;
     let executed = false;
-    let value = undefined;
 
     while (idx < src.length) {
       while (idx < src.length && /\s/.test(src[idx])) idx++;
@@ -383,9 +328,11 @@
 
       if (isElse) {
         const braceIdx = src.indexOf("{", idx);
+        if (braceIdx === -1) break;
         const closeIdx = findMatchingBrace(src, braceIdx);
+        if (closeIdx === -1) break;
         if (!executed) {
-          value = executeBlock(src.slice(braceIdx + 1, closeIdx), globals, eventInfo, { ...localVars }, logs);
+          executeBlock(src.slice(braceIdx + 1, closeIdx), globals, { ...localVars }, logs);
           executed = true;
         }
         idx = closeIdx + 1;
@@ -394,99 +341,19 @@
 
       const condStart = isFirstIf ? idx + 2 : idx + src.slice(idx).indexOf("if") + 2;
       const braceIdx = src.indexOf("{", condStart);
+      if (braceIdx === -1) break;
       const closeIdx = findMatchingBrace(src, braceIdx);
+      if (closeIdx === -1) break;
       const condExpr = src.slice(condStart, braceIdx).trim();
 
       if (!executed && Boolean(evalRustExpr(condExpr, globals, localVars))) {
-        value = executeBlock(src.slice(braceIdx + 1, closeIdx), globals, eventInfo, { ...localVars }, logs);
+        executeBlock(src.slice(braceIdx + 1, closeIdx), globals, { ...localVars }, logs);
         executed = true;
       }
       idx = closeIdx + 1;
     }
 
-    return { value, nextIdx: idx };
-  }
-
-  function splitMatchArms(matchBody) {
-    const arms = [];
-    let i = 0;
-    const len = matchBody.length;
-    while (i < len) {
-      while (i < len && /[\s,]/.test(matchBody[i])) i++;
-      if (i >= len) break;
-
-      const arrowIdx = matchBody.indexOf("=>", i);
-      if (arrowIdx === -1) break;
-      const patternPart = matchBody.slice(i, arrowIdx).trim();
-
-      let bodyStart = arrowIdx + 2;
-      while (bodyStart < len && /\s/.test(matchBody[bodyStart])) bodyStart++;
-
-      let bodyStr = "";
-      if (matchBody[bodyStart] === "{") {
-        const closeIdx = findMatchingBrace(matchBody, bodyStart);
-        if (closeIdx === -1) break;
-        bodyStr = matchBody.slice(bodyStart + 1, closeIdx).trim();
-        i = closeIdx + 1;
-      } else {
-        // Read until top-level comma
-        let parenDepth = 0;
-        let inStr = false;
-        let j = bodyStart;
-        for (; j < len; j++) {
-          const ch = matchBody[j];
-          if (ch === '"' && matchBody[j - 1] !== "\\") inStr = !inStr;
-          if (inStr) continue;
-          if (ch === "(") parenDepth++;
-          else if (ch === ")") parenDepth--;
-          else if (ch === "," && parenDepth === 0) break;
-        }
-        bodyStr = matchBody.slice(bodyStart, j).trim();
-        i = j + 1;
-      }
-
-      arms.push({ patternPart, bodyStr });
-    }
-    return arms;
-  }
-
-  function executeMatchEvent(matchBody, globals, eventInfo, localVars, logs) {
-    const arms = splitMatchArms(matchBody);
-    const evPascal = toPascalCase(eventInfo.name);
-
-    for (const arm of arms) {
-      // Split optional `if guard` on pattern
-      const guardMatch = /^([\s\S]+?)\s+if\s+([\s\S]+)$/.exec(arm.patternPart);
-      const pattern = (guardMatch ? guardMatch[1] : arm.patternPart).trim();
-      const guard = guardMatch ? guardMatch[2].trim() : null;
-
-      let matched = false;
-      const armLocals = { ...localVars };
-
-      if (pattern === "_") {
-        matched = true;
-      } else {
-        // Support Event::Foo or Event::Foo(val) or Foo | Bar
-        const alts = pattern.split("|").map((p) => p.trim());
-        for (const alt of alts) {
-          const evMatch = /^(?:Event::)?([A-Za-z0-9_]+)(?:\(\s*&?([a-zA-Z0-9_]+)\s*\))?$/.exec(alt);
-          if (evMatch && evMatch[1] === evPascal) {
-            matched = true;
-            if (evMatch[2] && evMatch[2] !== "_") {
-              armLocals[evMatch[2]] = eventInfo.payload;
-            }
-            break;
-          }
-        }
-      }
-
-      if (!matched) continue;
-      if (guard && !Boolean(evalRustExpr(guard, globals, armLocals))) continue;
-
-      return executeBlock(arm.bodyStr, globals, eventInfo, armLocals, logs);
-    }
-
-    return { __outcome: "Stay" };
+    return idx;
   }
 
   function createSimulation(model) {
@@ -497,9 +364,8 @@
     }));
     const stateByPascal = new Map(states.map((s) => [s.pascalName, s]));
     const stateByName = new Map(states.map((s) => [s.name, s]));
-    const transitions = [...(model.transitions || [])].sort(
-      (a, b) => (Number(a.priority) || 0) - (Number(b.priority) || 0),
-    );
+    const stateById = new Map(states.filter((s) => s.id).map((s) => [s.id, s]));
+    const transitions = (model.transitions || []).slice().sort(compareTransitions);
 
     let globals = {};
     let currentState = null;
@@ -525,11 +391,12 @@
       return diff;
     }
 
-    function runLifecycle(state, fnName, logs) {
-      if (!state || !state.code) return;
-      const body = extractFunctionBody(state.code, fnName);
-      if (!body) return;
-      executeBlock(body, globals, { name: "__lifecycle__", payload: undefined }, {}, logs);
+    function runLifecycle(state, hookName, logs) {
+      if (!state) return;
+      const bodies = getStateHookBodies(state);
+      const body = hookName === "on_enter" ? bodies.entryCode : bodies.exitCode;
+      if (!body || !body.trim()) return;
+      executeBlock(body, globals, {}, logs);
     }
 
     function reset() {
@@ -570,90 +437,73 @@
 
       const before = { ...globals };
       const logs = [];
-      const initialFromState = currentState;
-      let matchedTransition = null;
+      const fromState = currentState;
+      const evPascal = toPascalCase(eventName);
+
+      // Evaluate EVERY outgoing transition on `(fromState, evPascal)` via Guard AST
+      const matching = [];
+      for (const t of transitions) {
+        const isSrc =
+          (fromState.id && t.srcId === fromState.id) || t.srcName === fromState.name;
+        if (!isSrc) continue;
+        if (toPascalCase(t.event) !== evPascal) continue;
+
+        const rawGuard = String(t.guard || "").trim();
+        let guardOk = true;
+        if (rawGuard) {
+          const parsed = guardLang.parseGuard(rawGuard);
+          if (parsed.errors.length > 0) {
+            guardOk = false;
+            logs.push(`guard parse error (${t.name || t.event}): ${parsed.errors[0].message}`);
+          } else {
+            try {
+              guardOk = Boolean(guardLang.evalGuardAst(parsed.ast, globals, payload));
+            } catch (err) {
+              guardOk = false;
+              logs.push(`guard eval error (${t.name || t.event}): ${err.message}`);
+            }
+          }
+        }
+        if (guardOk) matching.push(t);
+      }
+
+      if (matching.length > 1) {
+        logs.push(
+          `Non-deterministic guard overlap in ${fromState.name} on ${evPascal}: ${matching.length} transitions enabled`,
+        );
+      }
+
+      const matchedTransition = matching[0] || null;
       let via = "stay";
 
-      let pending = { name: eventName, payload };
-      let depth = 0;
+      if (matchedTransition) {
+        const targetState =
+          (matchedTransition.dstId && stateById.get(matchedTransition.dstId)) ||
+          stateByName.get(matchedTransition.dstName) ||
+          stateByPascal.get(toPascalCase(matchedTransition.dstName)) ||
+          fromState;
+        const isSelf = targetState.name === fromState.name;
+        const runLifecycleHooks = !isSelf || Boolean(matchedTransition.reenter);
+        via = isSelf && !matchedTransition.reenter ? "model:self_transition" : "model:transition";
 
-      while (pending && depth < 8) {
-        depth += 1;
-        const activeEv = pending;
-        pending = null;
-
-        const fromState = currentState;
-        let targetState = null;
-
-        // 1. Run active state's Rust `on_event`
-        try {
-          const body = extractFunctionBody(currentState.code, "on_event");
-          if (body) {
-            const outcome = executeBlock(body, globals, activeEv, {}, logs);
-            if (outcome && outcome.__outcome === "Transition" && outcome.target) {
-              targetState =
-                stateByPascal.get(outcome.target) || stateByName.get(outcome.target) || null;
-              if (targetState) {
-                via = "rust:on_event";
-                matchedTransition =
-                  transitions.find(
-                    (t) =>
-                      t.srcName === fromState.name &&
-                      t.dstName === targetState.name &&
-                      toPascalCase(t.event) === toPascalCase(activeEv.name),
-                  ) || matchedTransition;
-              }
-            } else if (outcome && outcome.__outcome === "Emit" && outcome.event) {
-              logs.push(`emitted Event::${outcome.event}`);
-              pending = { name: outcome.event, payload: outcome.payload };
-              via = "rust:emit";
-              continue;
-            }
-          }
-        } catch (err) {
-          logs.push(`on_event error: ${err.message}`);
-        }
-
-        // 2. If Rust returned Stay, evaluate WebGME model-level transitions
-        if (!targetState) {
-          for (const t of transitions) {
-            if (t.srcName !== fromState.name) continue;
-            if (toPascalCase(t.event) !== toPascalCase(activeEv.name)) continue;
-            let guardOk = true;
-            if (t.guard && t.guard.trim()) {
-              try {
-                guardOk = Boolean(evalRustExpr(t.guard, globals, { payload: activeEv.payload }));
-              } catch (err) {
-                guardOk = false;
-                logs.push(`guard error (${t.name}): ${err.message}`);
-              }
-            }
-            if (guardOk) {
-              targetState =
-                stateByName.get(t.dstName) ||
-                stateByPascal.get(toPascalCase(t.dstName)) ||
-                null;
-              matchedTransition = t;
-              via = "model:transition";
-              if (t.action && t.action.trim()) {
-                try {
-                  executeBlock(t.action, globals, activeEv, {}, logs);
-                } catch (err) {
-                  logs.push(`action error (${t.name}): ${err.message}`);
-                }
-              }
-              break;
-            }
-          }
-        }
-
-        // 3. Perform state transition lifecycle (on_exit -> on_enter)
-        if (targetState && targetState.name !== fromState.name) {
+        if (runLifecycleHooks) {
           try {
             runLifecycle(fromState, "on_exit", logs);
           } catch (err) {
             logs.push(`on_exit error: ${err.message}`);
           }
+        }
+
+        if (matchedTransition.action && matchedTransition.action.trim()) {
+          try {
+            const actionLocals = payload !== undefined ? { payload } : {};
+            executeBlock(matchedTransition.action, globals, actionLocals, logs);
+          } catch (err) {
+            logs.push(`action error (${matchedTransition.name || matchedTransition.event}): ${err.message}`);
+          }
+        }
+
+        if (runLifecycleHooks) {
           currentState = targetState;
           try {
             runLifecycle(currentState, "on_enter", logs);
@@ -669,7 +519,7 @@
         timestamp: Date.now(),
         event: eventName,
         payload: payload !== undefined ? payload : null,
-        fromState: initialFromState.name,
+        fromState: fromState.name,
         toState: currentState.name,
         transitionId: matchedTransition ? matchedTransition.id || matchedTransition.name : null,
         via,

@@ -75,6 +75,8 @@ define([
               description: core.getAttribute(child, "description") || "",
               isInitial: Boolean(core.getAttribute(child, "isInitial")),
               isFinal: Boolean(core.getAttribute(child, "isFinal")),
+              entryCode: core.getAttribute(child, "entryCode") || "",
+              exitCode: core.getAttribute(child, "exitCode") || "",
               code: core.getAttribute(child, "codeCache") || "",
               gitOwner: core.getAttribute(child, "gitOwner") || "",
               gitRepo: core.getAttribute(child, "gitRepo") || "",
@@ -95,6 +97,8 @@ define([
               name: core.getAttribute(child, "name"),
               rustType: core.getAttribute(child, "rustType") || "i32",
               initialValue: core.getAttribute(child, "initialValue") || "0",
+              minValue: core.getAttribute(child, "minValue") || "",
+              maxValue: core.getAttribute(child, "maxValue") || "",
               description: core.getAttribute(child, "description") || "",
             });
           } else if (metaName === "EventDef") {
@@ -119,7 +123,7 @@ define([
             event: core.getAttribute(tNode, "event") || "Tick",
             guard: core.getAttribute(tNode, "guard") || "",
             action: core.getAttribute(tNode, "action") || "",
-            priority: core.getAttribute(tNode, "priority") || 1,
+            reenter: Boolean(core.getAttribute(tNode, "reenter")),
           });
         }
 
