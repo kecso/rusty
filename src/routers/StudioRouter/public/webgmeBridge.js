@@ -190,10 +190,12 @@
             code: child.getAttribute("codeCache") || "",
             gitOwner: child.getAttribute("gitOwner") || "",
             gitRepo: child.getAttribute("gitRepo") || "",
-            gitBranch: child.getAttribute("gitBranch") || "main",
+            gitBranch: child.getAttribute("gitBranch") || "",
             gitPath: child.getAttribute("gitPath") || "",
             gitArtifactType: child.getAttribute("gitArtifactType") || "file",
             gitBaseCommitSha: child.getAttribute("gitBaseCommitSha") || "",
+            dependsOn: child.getMemberIds("dependsOn") || [],
+            depsSignature: child.getAttribute("depsSignature") || "",
             position: { x: Number(pos.x) || 120, y: Number(pos.y) || 120 },
           });
         } else if (this._isMetaType(child, "GlobalVar")) {
@@ -230,6 +232,8 @@
           guard: tNode.getAttribute("guard") || "",
           action: tNode.getAttribute("action") || "",
           priority: Number(tNode.getAttribute("priority") ?? 1),
+          dependsOn: tNode.getMemberIds("dependsOn") || [],
+          depsSignature: tNode.getAttribute("depsSignature") || "",
         };
       });
 
@@ -296,16 +300,164 @@
         );
         this.client.setAttribute(id, "gitOwner", opts.gitOwner || "");
         this.client.setAttribute(id, "gitRepo", opts.gitRepo || "");
-        this.client.setAttribute(id, "gitBranch", opts.gitBranch || "main");
-        this.client.setAttribute(
-          id,
-          "gitPath",
-          opts.gitPath || global.RustyContract.defaultStatePath(opts.name),
-        );
+        this.client.setAttribute(id, "gitBranch", opts.gitBranch || "");
+        this.client.setAttribute(id, "gitPath", opts.gitPath || "");
         this.client.setAttribute(id, "gitArtifactType", "file");
         this.client.setAttribute(id, "gitBaseCommitSha", "");
         this.client.setRegistry(id, "position", opts.position || { x: 220, y: 200 });
         return id;
+      });
+    }
+
+    _applyDepsInsideTx(nodeId, nextMemberIds, depsSignature) {
+      const node = this.client.getNode(nodeId);
+      const current = new Set(node ? node.getMemberIds("dependsOn") || [] : []);
+      const desired = new Set(nextMemberIds || []);
+      for (const oldId of current) {
+        if (!desired.has(oldId)) {
+          this.client.removeMember(nodeId, oldId, "dependsOn");
+        }
+      }
+      for (const newId of desired) {
+        if (!current.has(newId)) {
+          this.client.addMember(nodeId, newId, "dependsOn");
+        }
+      }
+      if (depsSignature !== undefined) {
+        this.client.setAttribute(nodeId, "depsSignature", depsSignature);
+      }
+    }
+
+    syncNodeDependencies(nodeId, nextMemberIds, depsSignature, msg) {
+      this.runTransaction(msg || `Update dependsOn for ${nodeId}`, () => {
+        this._applyDepsInsideTx(nodeId, nextMemberIds, depsSignature);
+      });
+    }
+
+    updateStateCodeAndDeps(nodeId, code, nextMemberIds, depsSignature, msg) {
+      this.runTransaction(msg || `Update Rust code for ${nodeId}`, () => {
+        this.client.setAttribute(nodeId, "codeCache", code);
+        this._applyDepsInsideTx(nodeId, nextMemberIds, depsSignature);
+      });
+    }
+
+    updateTransitionAndDeps(nodeId, attrs, nextMemberIds, depsSignature, msg) {
+      this.runTransaction(msg || `Update Transition ${nodeId}`, () => {
+        for (const [k, v] of Object.entries(attrs)) {
+          this.client.setAttribute(nodeId, k, v);
+        }
+        this._applyDepsInsideTx(nodeId, nextMemberIds, depsSignature);
+      });
+    }
+
+    bindMachineRepo(machineId, { gitOwner, gitRepo, gitBranch, gitPath, clearStateOverrides, stateIds }) {
+      this.runTransaction(`Bind GitHub repo ${gitOwner}/${gitRepo}@${gitBranch}`, () => {
+        this.client.setAttribute(machineId, "gitOwner", gitOwner);
+        this.client.setAttribute(machineId, "gitRepo", gitRepo);
+        this.client.setAttribute(machineId, "gitBranch", gitBranch);
+        this.client.setAttribute(machineId, "gitPath", gitPath);
+
+        if (clearStateOverrides && Array.isArray(stateIds)) {
+          for (const stId of stateIds) {
+            this.client.setAttribute(stId, "gitOwner", "");
+            this.client.setAttribute(stId, "gitRepo", "");
+            this.client.setAttribute(stId, "gitBranch", "");
+            this.client.setAttribute(stId, "gitPath", "");
+          }
+        }
+      });
+    }
+
+    importStateMachineModel(model) {
+      const smBase = this.getMetaId("StateMachine");
+      const stBase = this.getMetaId("State");
+      const trBase = this.getMetaId("Transition");
+      const gBase = this.getMetaId("GlobalVar");
+      const evBase = this.getMetaId("EventDef");
+      if (!smBase || !stBase || !trBase || !gBase || !evBase) {
+        throw new Error("Rusty metamodel types not found in active WebGME project");
+      }
+
+      return this.runTransaction(`Import StateMachine ${model.name}`, () => {
+        const smId = this.client.createNode({ parentId: "", baseId: smBase });
+        this.client.setAttribute(smId, "name", model.name);
+        this.client.setAttribute(smId, "crateName", model.crateName || global.RustyContract.toSnakeCase(model.name));
+        this.client.setAttribute(smId, "description", model.description || "");
+        this.client.setAttribute(smId, "tickMs", Number(model.tickMs || 800));
+        this.client.setAttribute(smId, "gitOwner", model.gitOwner || "");
+        this.client.setAttribute(smId, "gitRepo", model.gitRepo || "");
+        this.client.setAttribute(smId, "gitBranch", model.gitBranch || "main");
+        this.client.setAttribute(smId, "gitPath", model.gitPath || "src/states");
+        this.client.setAttribute(smId, "gitArtifactType", "dir");
+
+        const globalsWithIds = (model.globals || []).map((g) => {
+          const gid = this.client.createNode({ parentId: smId, baseId: gBase });
+          this.client.setAttribute(gid, "name", g.name);
+          this.client.setAttribute(gid, "rustType", g.rustType || "i32");
+          this.client.setAttribute(gid, "initialValue", String(g.initialValue ?? "0"));
+          this.client.setAttribute(gid, "description", g.description || "");
+          return { ...g, id: gid };
+        });
+
+        const eventsWithIds = (model.events || []).map((ev) => {
+          const eid = this.client.createNode({ parentId: smId, baseId: evBase });
+          this.client.setAttribute(eid, "name", ev.name);
+          this.client.setAttribute(eid, "payloadType", ev.payloadType || "");
+          this.client.setAttribute(eid, "description", ev.description || "");
+          return { ...ev, id: eid };
+        });
+
+        const stateIdByName = new Map();
+        const statesWithIds = (model.states || []).map((st) => {
+          const sid = this.client.createNode({ parentId: smId, baseId: stBase });
+          this.client.setAttribute(sid, "name", st.name);
+          this.client.setAttribute(sid, "description", st.description || "");
+          this.client.setAttribute(sid, "isInitial", Boolean(st.isInitial));
+          this.client.setAttribute(sid, "isFinal", Boolean(st.isFinal));
+          this.client.setAttribute(sid, "color", st.color || "#38bdf8");
+          this.client.setAttribute(sid, "codeCache", st.code || "");
+          this.client.setAttribute(sid, "gitOwner", "");
+          this.client.setAttribute(sid, "gitRepo", "");
+          this.client.setAttribute(sid, "gitBranch", "");
+          this.client.setAttribute(sid, "gitPath", "");
+          this.client.setAttribute(sid, "gitArtifactType", "file");
+          this.client.setRegistry(sid, "position", st.position || { x: 160, y: 160 });
+          stateIdByName.set(st.name, sid);
+          return { ...st, id: sid };
+        });
+
+        const modelWithIds = { ...model, globals: globalsWithIds, events: eventsWithIds, states: statesWithIds };
+
+        for (const st of statesWithIds) {
+          const deps = global.RustyAnalyzer.extractDependencies(st.code || "", modelWithIds);
+          const sig = global.RustyAnalyzer.serializeDepsSnapshot(deps.snapshot);
+          this.client.setAttribute(st.id, "depsSignature", sig);
+          for (const mid of deps.memberIds) {
+            this.client.addMember(st.id, mid, "dependsOn");
+          }
+        }
+
+        for (const tr of model.transitions || []) {
+          const srcId = stateIdByName.get(tr.srcName);
+          const dstId = stateIdByName.get(tr.dstName);
+          if (!srcId || !dstId) continue;
+          const tid = this.client.createNode({ parentId: smId, baseId: trBase });
+          this.client.setAttribute(tid, "name", tr.name || `on_${global.RustyContract.toSnakeCase(tr.event)}`);
+          this.client.setAttribute(tid, "event", tr.event || "Tick");
+          this.client.setAttribute(tid, "guard", tr.guard || "");
+          this.client.setAttribute(tid, "action", tr.action || "");
+          this.client.setAttribute(tid, "priority", Number(tr.priority ?? 1));
+          this.client.setPointer(tid, "src", srcId);
+          this.client.setPointer(tid, "dst", dstId);
+          const deps = global.RustyAnalyzer.extractDependencies(tr.guard || "", modelWithIds, { triggerEvent: tr.event });
+          const sig = global.RustyAnalyzer.serializeDepsSnapshot(deps.snapshot);
+          this.client.setAttribute(tid, "depsSignature", sig);
+          for (const mid of deps.memberIds) {
+            this.client.addMember(tid, mid, "dependsOn");
+          }
+        }
+
+        return smId;
       });
     }
 
@@ -375,30 +527,7 @@
       });
     }
 
-    bindMachineRepo(machineId, { gitOwner, gitRepo, gitBranch, gitPath, applyToStateIds }) {
-      this.runTransaction(`Bind GitHub repo ${gitOwner}/${gitRepo}@${gitBranch}`, () => {
-        this.client.setAttribute(machineId, "gitOwner", gitOwner);
-        this.client.setAttribute(machineId, "gitRepo", gitRepo);
-        this.client.setAttribute(machineId, "gitBranch", gitBranch);
-        this.client.setAttribute(machineId, "gitPath", gitPath);
-
-        if (Array.isArray(applyToStateIds)) {
-          for (const st of applyToStateIds) {
-            this.client.setAttribute(st.id, "gitOwner", gitOwner);
-            this.client.setAttribute(st.id, "gitRepo", gitRepo);
-            this.client.setAttribute(st.id, "gitBranch", gitBranch);
-            if (!st.gitPath) {
-              const baseDir = (gitPath || "src/states").replace(/\/+$/, "");
-              this.client.setAttribute(
-                st.id,
-                "gitPath",
-                `${baseDir}/${global.RustyContract.toSnakeCase(st.name)}.rs`,
-              );
-            }
-          }
-        }
-      });
-    }
+    // bindMachineRepo and importStateMachineModel live above
   }
 
   global.WebGMEBridge = WebGMEBridge;

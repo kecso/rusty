@@ -1,0 +1,56 @@
+{
+  "id": "ImportFromGitHub",
+  "name": "Import StateMachine from GitHub Directory",
+  "version": "0.1.0",
+  "description": "Sweeps a Rust crate or states directory on GitHub and rebuilds the WebGME StateMachine design, transitions, globals, events, and dependsOn dependencies.",
+  "icon": {
+    "class": "glyphicon glyphicon-cloud-download",
+    "src": ""
+  },
+  "disableServerSideExecution": false,
+  "disableBrowserSideExecution": true,
+  "dependencies": [],
+  "writeAccessRequired": true,
+  "configStructure": [
+    {
+      "name": "owner",
+      "displayName": "GitHub Owner",
+      "description": "Repository owner (user or organization)",
+      "value": "kecso",
+      "valueType": "string",
+      "readOnly": false
+    },
+    {
+      "name": "repo",
+      "displayName": "Repository Name",
+      "description": "GitHub repository name",
+      "value": "rusty",
+      "valueType": "string",
+      "readOnly": false
+    },
+    {
+      "name": "branch",
+      "displayName": "Branch / Ref",
+      "description": "Branch name or tag to sweep",
+      "value": "main",
+      "valueType": "string",
+      "readOnly": false
+    },
+    {
+      "name": "dirPath",
+      "displayName": "Directory Path",
+      "description": "Crate root (e.g. examples/smart-thermostat) or states folder",
+      "value": "examples/smart-thermostat",
+      "valueType": "string",
+      "readOnly": false
+    },
+    {
+      "name": "machineName",
+      "displayName": "Target StateMachine Name (optional)",
+      "description": "Override inferred StateMachine name",
+      "value": "",
+      "valueType": "string",
+      "readOnly": false
+    }
+  ]
+}

@@ -19,3 +19,12 @@
 | `RUSTY_E030` | Error | Missing required `pub fn on_event(globals: &mut Globals, event: &Event) -> Outcome` |
 | `RUSTY_W031` | Warning | Missing `pub fn on_enter(...)` or `pub fn on_exit(...)` lifecycle function |
 | `RUSTY_E032` | Error | Unbalanced delimiter (`{`, `}`, `(`, `)`, `[`, `]`) |
+| `DESIGN_GLOBAL_RENAMED` | Error | Referenced `GlobalVar` tracked in `dependsOn` was renamed in the design |
+| `DESIGN_GLOBAL_REMOVED` | Error | Referenced `GlobalVar` tracked in `dependsOn` was removed from the design |
+| `DESIGN_TYPE_CHANGED` | Warning | Type (`rustType`) of a referenced `GlobalVar` changed — review & recheck state code or guard |
+| `DESIGN_EVENT_RENAMED` | Error | Referenced `EventDef` tracked in `dependsOn` was renamed |
+| `DESIGN_EVENT_REMOVED` | Error | Referenced `EventDef` tracked in `dependsOn` was removed |
+| `DESIGN_PAYLOAD_CHANGED` | Warning | Payload type of a referenced `EventDef` changed |
+| `DESIGN_STATE_RENAMED` | Error | Referenced target `State` tracked in `dependsOn` was renamed |
+| `DESIGN_STATE_REMOVED` | Error | Referenced target `State` tracked in `dependsOn` was deleted |
+| `DESIGN_DEPENDENCY_MISSING` | Warning | Dangling member inside WebGME `dependsOn` Set requires code review |

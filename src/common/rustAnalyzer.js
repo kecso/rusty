@@ -538,7 +538,469 @@
     };
   }
 
+  function buildSymbolTables(model) {
+    const globalMap = new Map();
+    const globalById = new Map();
+    for (const g of (model && model.globals) || []) {
+      const key = toSnakeCase(g.name);
+      const item = { ...g, snakeName: key };
+      globalMap.set(key, item);
+      if (g.id) globalById.set(g.id, item);
+    }
+
+    const eventMap = new Map();
+    const eventById = new Map();
+    for (const ev of (model && model.events) || []) {
+      const pascal = toPascalCase(ev.name);
+      const item = { ...ev, pascalName: pascal, payloadType: (ev.payloadType || "").trim() };
+      eventMap.set(pascal, item);
+      if (ev.id) eventById.set(ev.id, item);
+    }
+
+    const stateMap = new Map();
+    const stateById = new Map();
+    for (const st of (model && model.states) || []) {
+      const pascal = toPascalCase(st.name);
+      const item = { ...st, pascalName: pascal };
+      stateMap.set(pascal, item);
+      if (st.id) stateById.set(st.id, item);
+    }
+
+    return {
+      globalMap,
+      globalById,
+      globalNames: Array.from(globalMap.keys()),
+      eventMap,
+      eventById,
+      eventNames: Array.from(eventMap.keys()),
+      stateMap,
+      stateById,
+      stateNames: Array.from(stateMap.keys()),
+    };
+  }
+
+  function checkDelimiters(maskedClean, pushDiag) {
+    const stack = [];
+    const pairs = { "{": "}", "(": ")", "[": "]" };
+    const closers = { "}": "{", ")": "(", "]": "[" };
+    for (let i = 0; i < maskedClean.length; i++) {
+      const ch = maskedClean[i];
+      if (pairs[ch]) {
+        stack.push({ ch, offset: i });
+      } else if (closers[ch]) {
+        if (stack.length === 0 || stack[stack.length - 1].ch !== closers[ch]) {
+          pushDiag("error", "RUSTY_E032", `Unexpected closing '${ch}'`, i, i + 1);
+        } else {
+          stack.pop();
+        }
+      }
+    }
+    for (const unclosed of stack) {
+      pushDiag(
+        "error",
+        "RUSTY_E032",
+        `Unclosed '${unclosed.ch}' — expected '${pairs[unclosed.ch]}'`,
+        unclosed.offset,
+        unclosed.offset + 1,
+      );
+    }
+  }
+
+  /**
+   * Validate a transition guard expression (and trigger event) against live WebGME symbols.
+   */
+  function analyzeGuardExpression(guardExpr, model, transition) {
+    const t0 = typeof performance !== "undefined" ? performance.now() : Date.now();
+    const expr = String(guardExpr || "");
+    const maskedNoComments = maskSource(expr, false);
+    const maskedClean = maskSource(expr, true);
+    const lineStarts = buildLineStarts(expr);
+    const diagnostics = [];
+
+    function pushDiag(severity, codeId, message, startOff, endOff, quickFix) {
+      const s = offsetToPos(lineStarts, Math.max(0, startOff));
+      const e = offsetToPos(lineStarts, Math.max(startOff + 1, endOff));
+      diagnostics.push({
+        severity,
+        code: codeId,
+        message,
+        startLine: s.line,
+        startColumn: s.column,
+        endLine: e.line,
+        endColumn: e.column,
+        quickFix: quickFix || null,
+      });
+    }
+
+    const { globalMap, globalNames, eventMap, eventNames, stateMap, stateNames } =
+      buildSymbolTables(model);
+
+    if (transition && transition.event) {
+      const evKey = toPascalCase(transition.event);
+      if (!eventMap.has(evKey)) {
+        const suggestion = findClosest(evKey, eventNames);
+        const hint = suggestion
+          ? ` Did you mean \`${suggestion}\`?`
+          : eventNames.length > 0
+            ? ` Defined events: ${eventNames.join(", ")}.`
+            : "";
+        diagnostics.push({
+          severity: "error",
+          code: "RUSTY_E010",
+          message: `Transition references unknown event \`${transition.event}\`.${hint}`,
+          startLine: 1,
+          startColumn: 1,
+          endLine: 1,
+          endColumn: 1,
+          quickFix: null,
+        });
+      }
+    }
+
+    if (expr.trim()) {
+      checkDelimiters(maskedClean, pushDiag);
+
+      const globalRefRe = /\bglobals\.([a-zA-Z_][a-zA-Z0-9_]*)\b/g;
+      let m;
+      while ((m = globalRefRe.exec(maskedNoComments)) !== null) {
+        const field = m[1];
+        const fieldStart = m.index + "globals.".length;
+        const fieldEnd = fieldStart + field.length;
+        if (!globalMap.has(field)) {
+          const suggestion = findClosest(field, globalNames);
+          const hint = suggestion
+            ? ` Did you mean \`globals.${suggestion}\`?`
+            : globalNames.length > 0
+              ? ` Defined globals: ${globalNames.join(", ")}.`
+              : "";
+          pushDiag(
+            "error",
+            "RUSTY_E001",
+            `Unknown global \`globals.${field}\` in transition guard.${hint}`,
+            fieldStart,
+            fieldEnd,
+            suggestion ? { title: `Replace with '${suggestion}'`, replacement: suggestion } : null,
+          );
+        } else {
+          const def = globalMap.get(field);
+          const after = maskedNoComments.slice(fieldEnd);
+          const cmpMatch = /^\s*(?:==|!=|<=|>=|<|>)\s*([^&\s|;)]+)/.exec(after);
+          if (cmpMatch) {
+            const litType = inferLiteralType(cmpMatch[1].trim());
+            if (litType && !isTypeCompatible(def.rustType, litType)) {
+              pushDiag(
+                "error",
+                "RUSTY_E003",
+                `Type mismatch in guard: \`globals.${field}\` is \`${def.rustType}\`, compared against \`${cmpMatch[1].trim()}\``,
+                fieldStart,
+                fieldEnd,
+              );
+            }
+          }
+        }
+      }
+
+      const evRe = /\bEvent::([A-Za-z0-9_]+)\b/g;
+      while ((m = evRe.exec(maskedNoComments)) !== null) {
+        if (!eventMap.has(m[1])) {
+          pushDiag(
+            "error",
+            "RUSTY_E010",
+            `Unknown event \`Event::${m[1]}\` in guard.`,
+            m.index,
+            m.index + m[0].length,
+          );
+        }
+      }
+
+      const stRe = /\bStateId::([A-Za-z0-9_]+)\b/g;
+      while ((m = stRe.exec(maskedNoComments)) !== null) {
+        if (!stateMap.has(m[1])) {
+          pushDiag(
+            "error",
+            "RUSTY_E020",
+            `Unknown state \`StateId::${m[1]}\` in guard.`,
+            m.index,
+            m.index + m[0].length,
+          );
+        }
+      }
+    }
+
+    const durationMs =
+      Math.round(((typeof performance !== "undefined" ? performance.now() : Date.now()) - t0) * 100) /
+      100;
+    const errors = diagnostics.filter((d) => d.severity === "error").length;
+    const warnings = diagnostics.filter((d) => d.severity === "warning").length;
+
+    return {
+      diagnostics,
+      durationMs,
+      stats: { errors, warnings, total: diagnostics.length },
+    };
+  }
+
+  /**
+   * Extract all live WebGME design elements referenced by a State's Rust code
+   * or a Transition's guard + trigger event (`dependsOn` Set membership & snapshot).
+   */
+  function extractDependencies(codeOrGuard, model, opts = {}) {
+    const masked = maskSource(String(codeOrGuard || ""), false);
+    const { globalMap, eventMap, stateMap } = buildSymbolTables(model);
+
+    const memberIdSet = new Set();
+    const snapshot = { globals: {}, events: {}, states: {} };
+
+    function recordGlobal(def) {
+      if (!def) return;
+      const key = def.id || `global:${def.snakeName}`;
+      if (def.id) memberIdSet.add(def.id);
+      snapshot.globals[key] = { name: def.snakeName || def.name, rustType: def.rustType || "i32" };
+    }
+
+    function recordEvent(def) {
+      if (!def) return;
+      const key = def.id || `event:${def.pascalName}`;
+      if (def.id) memberIdSet.add(def.id);
+      snapshot.events[key] = { name: def.pascalName || def.name, payloadType: def.payloadType || "" };
+    }
+
+    function recordState(def) {
+      if (!def) return;
+      const key = def.id || `state:${def.pascalName}`;
+      if (def.id) memberIdSet.add(def.id);
+      snapshot.states[key] = { name: def.pascalName || def.name };
+    }
+
+    let m;
+    const gRe = /\bglobals\.([a-zA-Z_][a-zA-Z0-9_]*)\b/g;
+    while ((m = gRe.exec(masked)) !== null) {
+      recordGlobal(globalMap.get(m[1]));
+    }
+
+    const eRe = /\bEvent::([A-Za-z0-9_]+)\b/g;
+    while ((m = eRe.exec(masked)) !== null) {
+      recordEvent(eventMap.get(m[1]));
+    }
+    if (opts.triggerEvent) {
+      recordEvent(eventMap.get(toPascalCase(opts.triggerEvent)));
+    }
+
+    const sRe = /\bStateId::([A-Za-z0-9_]+)\b/g;
+    while ((m = sRe.exec(masked)) !== null) {
+      recordState(stateMap.get(m[1]));
+    }
+
+    return {
+      memberIds: Array.from(memberIdSet).sort(),
+      snapshot,
+    };
+  }
+
+  function serializeDepsSnapshot(snapshot) {
+    return JSON.stringify(snapshot || { globals: {}, events: {}, states: {} });
+  }
+
+  function parseDepsSnapshot(raw) {
+    if (!raw) return null;
+    try {
+      const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+      if (parsed && typeof parsed === "object") {
+        return {
+          globals: parsed.globals || {},
+          events: parsed.events || {},
+          states: parsed.states || {},
+        };
+      }
+    } catch (_err) {
+      // ignore malformed
+    }
+    return null;
+  }
+
+  function detectDriftReasons(node, model, tables) {
+    const reasons = [];
+    const snap = parseDepsSnapshot(node.depsSignature);
+    if (!snap) return reasons;
+
+    const { globalById, eventById, stateById } = tables;
+
+    for (const [id, prev] of Object.entries(snap.globals)) {
+      if (!globalById.size && id.startsWith("global:")) continue;
+      const cur = globalById.get(id);
+      if (!cur) {
+        if (!tables.globalMap.has(toSnakeCase(prev.name))) {
+          reasons.push({
+            severity: "error",
+            code: "DESIGN_GLOBAL_REMOVED",
+            message: `Referenced global \`globals.${prev.name}\` was removed from the design`,
+          });
+        }
+      } else {
+        const prevSnake = toSnakeCase(prev.name);
+        if (cur.snakeName !== prevSnake) {
+          reasons.push({
+            severity: "error",
+            code: "DESIGN_GLOBAL_RENAMED",
+            message: `Referenced global \`${prevSnake}\` was renamed to \`${cur.snakeName}\``,
+          });
+        }
+        if ((cur.rustType || "i32") !== (prev.rustType || "i32")) {
+          reasons.push({
+            severity: "warning",
+            code: "DESIGN_TYPE_CHANGED",
+            message: `Type of \`globals.${cur.snakeName}\` changed from \`${prev.rustType}\` to \`${cur.rustType}\` — review/recheck code`,
+          });
+        }
+      }
+    }
+
+    for (const [id, prev] of Object.entries(snap.events)) {
+      if (!eventById.size && id.startsWith("event:")) continue;
+      const cur = eventById.get(id);
+      if (!cur) {
+        if (!tables.eventMap.has(toPascalCase(prev.name))) {
+          reasons.push({
+            severity: "error",
+            code: "DESIGN_EVENT_REMOVED",
+            message: `Referenced event \`Event::${prev.name}\` was removed from the design`,
+          });
+        }
+      } else {
+        if (cur.pascalName !== toPascalCase(prev.name)) {
+          reasons.push({
+            severity: "error",
+            code: "DESIGN_EVENT_RENAMED",
+            message: `Referenced event \`Event::${prev.name}\` was renamed to \`Event::${cur.pascalName}\``,
+          });
+        }
+        if ((cur.payloadType || "") !== (prev.payloadType || "")) {
+          reasons.push({
+            severity: "warning",
+            code: "DESIGN_PAYLOAD_CHANGED",
+            message: `Payload type of \`Event::${cur.pascalName}\` changed (${prev.payloadType || "none"} → ${cur.payloadType || "none"})`,
+          });
+        }
+      }
+    }
+
+    for (const [id, prev] of Object.entries(snap.states)) {
+      if (!stateById.size && id.startsWith("state:")) continue;
+      const cur = stateById.get(id);
+      if (!cur) {
+        if (!tables.stateMap.has(toPascalCase(prev.name))) {
+          reasons.push({
+            severity: "error",
+            code: "DESIGN_STATE_REMOVED",
+            message: `Referenced state \`StateId::${prev.name}\` was removed from the design`,
+          });
+        }
+      } else if (cur.pascalName !== toPascalCase(prev.name)) {
+        reasons.push({
+          severity: "error",
+          code: "DESIGN_STATE_RENAMED",
+          message: `Referenced state \`StateId::${prev.name}\` was renamed to \`StateId::${cur.pascalName}\``,
+        });
+      }
+    }
+
+    // Check explicit WebGME Set membership ids that became dangling
+    if (Array.isArray(node.dependsOn)) {
+      for (const depId of node.dependsOn) {
+        if (!globalById.has(depId) && !eventById.has(depId) && !stateById.has(depId)) {
+          if (!reasons.some((r) => r.code.endsWith("_REMOVED"))) {
+            reasons.push({
+              severity: "warning",
+              code: "DESIGN_DEPENDENCY_MISSING",
+              message: "A referenced design element (WebGME dependsOn Set member) was deleted — recheck code",
+            });
+          }
+        }
+      }
+    }
+
+    return reasons;
+  }
+
+  /**
+   * Compute full design-to-code impact report across all States and Transition guards
+   * in a StateMachine model, combining live code diagnostics with stored WebGME `dependsOn` drift.
+   */
+  function computeDesignImpact(model) {
+    const tables = buildSymbolTables(model);
+    const byStateId = {};
+    const byTransitionId = {};
+    const items = [];
+
+    for (const st of (model && model.states) || []) {
+      const codeRes = analyzeStateCode(st.code || "", model, st);
+      const drift = detectDriftReasons(st, model, tables);
+      const seenMsg = new Set();
+      const reasons = [];
+      for (const r of [...drift, ...codeRes.diagnostics]) {
+        const key = `${r.code}:${r.message}`;
+        if (seenMsg.has(key)) continue;
+        seenMsg.add(key);
+        reasons.push({ severity: r.severity, code: r.code, message: r.message });
+      }
+      if (reasons.length > 0) {
+        const entry = {
+          kind: "state",
+          id: st.id || st.name,
+          name: st.name,
+          errors: reasons.filter((r) => r.severity === "error").length,
+          warnings: reasons.filter((r) => r.severity === "warning").length,
+          reasons,
+        };
+        byStateId[entry.id] = entry;
+        items.push(entry);
+      }
+    }
+
+    for (const tr of (model && model.transitions) || []) {
+      const guardRes = analyzeGuardExpression(tr.guard || "", model, tr);
+      const drift = detectDriftReasons(tr, model, tables);
+      const seenMsg = new Set();
+      const reasons = [];
+      for (const r of [...drift, ...guardRes.diagnostics]) {
+        const key = `${r.code}:${r.message}`;
+        if (seenMsg.has(key)) continue;
+        seenMsg.add(key);
+        reasons.push({ severity: r.severity, code: r.code, message: r.message });
+      }
+      if (reasons.length > 0) {
+        const entry = {
+          kind: "transition",
+          id: tr.id || tr.name,
+          name: `${tr.srcName || "?"} -> ${tr.dstName || "?"} (${tr.event})`,
+          errors: reasons.filter((r) => r.severity === "error").length,
+          warnings: reasons.filter((r) => r.severity === "warning").length,
+          reasons,
+        };
+        byTransitionId[entry.id] = entry;
+        items.push(entry);
+      }
+    }
+
+    const impactedStates = Object.keys(byStateId).length;
+    const impactedTransitions = Object.keys(byTransitionId).length;
+
+    return {
+      totalImpacted: impactedStates + impactedTransitions,
+      impactedStates,
+      impactedTransitions,
+      byStateId,
+      byTransitionId,
+      items,
+    };
+  }
+
   return {
     analyzeStateCode,
+    analyzeGuardExpression,
+    extractDependencies,
+    serializeDepsSnapshot,
+    parseDepsSnapshot,
+    computeDesignImpact,
   };
 });

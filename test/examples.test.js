@@ -4,7 +4,12 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const path = require("path");
 const { execFileSync, spawnSync } = require("child_process");
-const { getStarterBlinkyModel, getSmartThermostatModel } = require("../src/common/rustContract");
+const {
+  getStarterBlinkyModel,
+  getSmartThermostatModel,
+  resolveStateGitLink,
+  resolveCrateFilePath,
+} = require("../src/common/rustContract");
 const { analyzeStateCode } = require("../src/common/rustAnalyzer");
 const { createSimulation } = require("../src/common/rustSimEngine");
 
@@ -41,7 +46,14 @@ describe("Tutorial Examples (BlinkyController & SmartThermostat)", () => {
       assert.equal(model.gitRepo, "rusty");
       assert.equal(model.gitBranch, "dev");
 
+      const cargoPath = resolveCrateFilePath(model, "Cargo.toml");
+      assert.match(cargoPath, /^examples\/[a-z-]+\/Cargo\.toml$/);
+
       for (const st of model.states) {
+        assert.equal(st.gitPath, "");
+        const eff = resolveStateGitLink(model, st);
+        assert.match(eff.gitPath, /^examples\/[a-z-]+\/src\/states\/[a-z_]+\.rs$/);
+        assert.equal(eff.isOverridden, false);
         const res = analyzeStateCode(st.code, model, st);
         assert.equal(
           res.stats.errors,

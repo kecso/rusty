@@ -1,60 +1,52 @@
-# Tutorial 3: Edit-Time Checks in Monaco
+# Tutorial 2: Edit-Time Checks, Guards & Design Impact Tracking
 
-Rusty Studio embeds **Monaco Editor** (`0.57.0`) directly inside the state inspector and pairs it with **`RustyAnalyzer`** (`src/common/rustAnalyzer.js`) for **sub-millisecond edit-time verification** against your live WebGME model.
+Rusty Studio pairs embedded **Monaco Editor** (`0.57.0`) with **`RustyAnalyzer`** (`src/common/rustAnalyzer.js`) and WebGME **`dependsOn` Set tracking** so mistakes are caught immediately—whether you are editing Rust code or reshaping the machine design.
 
-![Monaco edit-time checks and rustc verification](/images/demo-monaco-edit-checks.gif)
+![Design impact tracking, Monaco edit-time checks, and rustc verification](/images/demo-monaco-edit-checks.gif)
 
-## Why Not Wait for `cargo check` on Every Keystroke?
+## Continuous Two-Way Protection
 
-Running `cargo check` spawns a subprocess (~300–1000ms) and only catches errors *after* regenerating the crate. By contrast, `RustyAnalyzer` inspects your live WebGME symbol tables (`GlobalVar`, `EventDef`, `State`, `Transition`) in **< 1 millisecond** in the browser on a 55ms keystroke debounce. You get:
+1. **Code → Design Checks (as you type in `< 1 ms`)**:
+   - Autocomplete and inline red/yellow squiggles for shared variables, event payloads, transition targets, and transition guard expressions.
+   - Clickable **Problems** list below Monaco + full **`✓ Verify with rustc`** overlay.
+2. **Design → Code Impact Tracking (`dependsOn` WebGME Set)**:
+   - Every State and Transition records which `GlobalVar`, `EventDef`, and `State` elements its Rust code or guard references (`dependsOn` Set + `depsSignature`).
+   - Whenever you **rename**, **retype**, or **delete** an element in the left Explorer, Rusty immediately flags every affected state and transition in the **⚠ Design Impact Banner**, on the diagram nodes/badges, and inside the Inspector so nothing silently breaks until integration testing.
 
-1. **WebGME-Driven Autocomplete** when typing `globals.`, `Event::`, `StateId::`, or `Outcome::`
-2. **Inline Red/Yellow Monaco Squiggles** as you type
-3. **Clickable Problems List** below Monaco that jumps the cursor to the exact line and column
-4. **Full `rustc` Overlay** when clicking **✓ Verify with rustc**, merging real compiler errors onto the same Monaco editor
+## Hands-On Exercises (`SmartThermostat`)
 
-## Hands-On Exercises (Try Breaking `Heating`!)
+Select **`SmartThermostat`** → **`Heating`** in Rusty Studio and try the exercises below:
 
-Select **`SmartThermostat`** → **`Heating`** in Rusty Studio and try each edit below inside Monaco (without saving yet!):
+### Exercise 1: Trigger Live Design-to-Code Impact (`dependsOn` Set)
 
-### Exercise 1: Catch a Misspelled Global Variable (`RUSTY_E001`)
+1. In the left **Globals** list, click **`✎`** on **`max_cycle_ticks`**.
+2. Rename it to **`duty_limit`** and click **Apply to Design**.
+3. Immediately observe:
+   - The **⚠ Design Impact** banner appears above the diagram with clickable chips for **`Heating`**, **`Cooling`**, and any affected guards.
+   - Both diagram boxes light up with `⚠` badges and sidebar warnings.
+   - Changing a global's type (e.g., `eco_mode` from `bool` to `i32`) flags a `DESIGN_TYPE_CHANGED` review alert even before running `cargo`.
+4. Click **`✎`** on `duty_limit` and restore **`max_cycle_ticks`**—all impact warnings clear immediately.
 
-Change `globals.eco_mode` to `globals.eco_mde`.
+### Exercise 2: Validate Transition Guards Live
 
-- Within ~55ms, Monaco underlines `eco_mde` in red:
-  > `[RUSTY_E001] Unknown global variable globals.eco_mde. Did you mean globals.eco_mode?`
+1. Click any guarded transition badge on the diagram (such as **`B ⚑`** from `Standby → Heating`).
+2. In the right **Transition Inspector**, edit **Rust Guard Expression** to introduce a typo (`globals.target_tem_c`) or mismatched sign (`globals.cycle_ticks == -1`).
+3. Live guard diagnostics appear immediately below the input with typo hints (`RUSTY_E001` / `RUSTY_E003`), and saving updates the Transition's `dependsOn` Set automatically.
 
-### Exercise 2: Catch Type & Sign Errors on Globals (`RUSTY_E002`, `RUSTY_E003`)
+### Exercise 3: Catch Misspelled Globals & Type Errors in Monaco
 
-Add a line inside `on_enter`:
+In **`Heating`**, temporarily change `globals.eco_mode` to `globals.eco_mde` and add `globals.cycle_ticks = -1;`:
 
-```rust
-globals.cycle_ticks = -1;
-globals.eco_mode += 1;
-```
+- Within ~55ms, Monaco highlights both with red squiggles and lists `RUSTY_E001` and `RUSTY_E003` in the clickable **Problems** list.
 
-- `cycle_ticks` is `u32` (unsigned), so `-1` is flagged immediately as `RUSTY_E003`.
-- `eco_mode` is `bool`, so `+=` is flagged immediately as `RUSTY_E002`.
+### Exercise 4: Catch Payload & Topology Mismatches (`RUSTY_E012`, `RUSTY_W013`, `RUSTY_W021`)
 
-### Exercise 3: Catch Payload Arity & Type Errors on Events (`RUSTY_E011`, `RUSTY_E012`)
+- Returning `Outcome::Emit(Event::SetTarget("warm"))` flags payload type mismatch (`RUSTY_E012`).
+- Emitting `Event::ToggleEco` without handling it warns `RUSTY_W013`.
+- Returning `Outcome::Transition(StateId::Cooling)` from `Heating` warns `RUSTY_W021` because no matching edge exists on the diagram.
 
-Try returning:
+### Exercise 5: Verify with Real `rustc`
 
-```rust
-Outcome::Emit(Event::SetTarget("warm"))
-```
+Click **`✓ Verify with rustc`** in the top bar—Studio compiles the complete generated crate on the server and overlays genuine `cargo check` compiler markers directly in Monaco.
 
-- `RustyAnalyzer` checks the WebGME `EventDef` node for `SetTarget` (`payloadType = f64`) and flags `"warm"` with `RUSTY_E012`.
-
-### Exercise 4: Catch Unhandled Self-Emitted Events (`RUSTY_W013`)
-
-Try returning `Outcome::Emit(Event::ToggleEco)` without matching `Event::ToggleEco` or declaring a WebGME transition for it on that state — `RustyAnalyzer` warns with `RUSTY_W013` so an emitted event never disappears silently.
-
-### Exercise 5: Catch Undeclared Topology Transitions (`RUSTY_W021`)
-
-Try returning `Outcome::Transition(StateId::Cooling)` from `Heating`.
-
-- `StateId::Cooling` exists, so `E020` does not fire — instead `RUSTY_W021` warns that there is no matching WebGME `Transition` edge from `Heating` to `Cooling` on the diagram!
-- Either fix the code or use **⇢ Add Transition** on the diagram to keep topology and code 100% consistent.
-
-See [Reference: Edit-Time Diagnostics](../reference/diagnostics.md) for the complete list of codes.
+See [Reference: Edit-Time & Impact Diagnostics](../reference/diagnostics.md) for every diagnostic code.

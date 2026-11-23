@@ -1,21 +1,20 @@
 # rusty
 
-Rust state-machine modeling & simulation studio built as the poster-child **WebGME + [`webgme-git`](https://github.com/kecso/webgme-git)** application:
+Rusty Studio pairs visual state machine design in a central version-controlled database (WebGME) with Git-backed Rust state modules via [`webgme-git`](https://github.com/kecso/webgme-git):
 
-- **WebGME owns topology & data** (`StateMachine`, `State`, `Transition`, `GlobalVar`, `EventDef`, canvas positions, and `GitArtifactLink` coordinates). The Rusty Studio UI connects directly to the live WebGME server via `GME.classes.Client` (`/gme-dist/webgme.classes.build.js`), subscribes to live WebGME territories, and commits every edit inside WebGME transactions.
-- **GitHub owns per-state Rust behavior** via `webgme-git`: embedded self-hosted **Monaco Editor** auto-fetches state files on edit via Octokit (`/routers/gitrouter/tree`), validates code in **< 1ms** via `RustyAnalyzer`, and commits+pushes atomically on `⌘S` / `Ctrl+S` (`/routers/gitrouter/commit`) with transparent auto-rebase and HTTP 409 3-way conflict resolution.
-- **Dual-tier web-based dynamic simulation**:
-  1. **Instant In-Browser Dynamic Simulator** (`src/common/rustSimEngine.js`): executes `on_enter` / `on_event` / `on_exit`, payload events, `Outcome::Emit(...)`, math/clamp expressions, and transition guards live with animated SVG state/edge highlights and fault injection.
-  2. **Real `rustc` / `cargo` Verification & Native Trace Parity** (`/routers/rustsim`): generates a standalone Rust crate and runs `cargo check` / `cargo run` to overlay compiler markers in Monaco and verify 100% behavioral parity with the browser simulation.
+- **Visual Design, Version-Controlled**: Design states, guarded transitions, events, and shared data visually on a clean fixed layered diagram and store your architecture in a central version-controlled model database.
+- **Hybrid Code Stored in Plain Git**: Edit each state's Rust implementation inside the studio's embedded Monaco editor while the files themselves live in a standard Git repository (bound at the machine directory level, with optional per-state overrides) so your code can also be edited, tested, or built in any external IDE without the web UI.
+- **Continuous Edit & Design-Impact Checks**: Every keystroke and transition guard is checked immediately against your model—and whenever you rename, retype, or remove an element in the design, Rusty highlights every affected state and guard automatically via tracked WebGME `dependsOn` Sets.
+- **Standalone Rust Crates & Verification**: Test behavior interactively in the browser, verify execution parity against compiled native Rust (`rustc` / `cargo`), export standalone zero-dependency Cargo crates, or sweep existing GitHub directories back into WebGME (`ImportFromGitHub`).
 
 ![Rusty Studio SmartThermostat Demo](./docs/public/images/demo-smart-thermostat.gif)
 
-## Tutorial Examples & Fork-First `dev` Sandbox Workflow
+## Step-by-Step Tutorial & Pre-Seeded Demo Showcases
 
-Two complete, runnable tutorial models are pre-seeded in `seed/RustySeed.webgmex` and materialized under [`examples/`](./examples/README.md), with `gitRepo = rusty` and `gitBranch = dev` (`gitOwner` left blank so you bind **your own fork** `<your-username>/rusty@dev` via **Bind GitHub Repo…** to test live pushes without needing write access to `kecso/rusty`):
-
-- [`examples/blinky/`](./examples/blinky) — **BlinkyController**: hello-world GPIO blink loop, thermal limit guard, `Fault` / `Reset` recovery.
-- [`examples/smart-thermostat/`](./examples/smart-thermostat) — **SmartThermostat**: physics-computing HVAC controller with `f64` thermal drift & `energy_wh`, payload events (`SetTarget(f64)`, `SetAmbient(f64)`), `Outcome::Emit(Event::OverheatAlert)`, `Cooldown`, and `SafeLockout`.
+- **From-Scratch Tutorial**: Follow [**Build a Simple Counter**](https://kecso.github.io/rusty/tutorial/00-build-a-counter.html) (`docs/tutorial/00-build-a-counter.md`) to sign in via GitHub, bind your fork's `dev` directory, design states/globals/events/guards, experience design-impact tracking, and export a standalone crate.
+- **Pre-Seeded Demo Showcases** (`seed/RustySeed.webgmex` & [`examples/`](./examples/README.md), using machine-level `gitRepo = rusty`, `gitBranch = dev`, blank `gitOwner` so you bind `<your-username>/rusty@dev`):
+  - [`examples/blinky/`](./examples/blinky) — **BlinkyController**: GPIO blink loop, thermal limit guard, fault recovery.
+  - [`examples/smart-thermostat/`](./examples/smart-thermostat) — **SmartThermostat**: HVAC controller with thermal drift physics, payload events, self-emitted alerts, cooldown, and lockout recovery.
 
 ## Tutorial Documentation (VitePress)
 
@@ -31,14 +30,14 @@ npm run docs:build   # Build static docs served at http://127.0.0.1:8888/routers
 | Component | Path | Role |
 | --- | --- | --- |
 | WebGME Server | `app.js`, `config/` | Standalone WebGME host wiring `webgme-git`, seeds, plugins, and routers |
-| Metamodel & Seed | `metamodel/Language.json`, `seed/RustySeed.webgmex` | `GitArtifactLink` mixin + `StateMachine`, `State`, `Transition`, `GlobalVar`, `EventDef` + both example models |
-| Tutorial Examples | `examples/blinky/`, `examples/smart-thermostat/` | Standalone runnable Cargo crates bound to the `dev` branch |
-| Documentation Site | `docs/` | VitePress tutorials, architecture concepts, and metamodel/diagnostics reference |
+| Metamodel & Seed | `metamodel/Language.json`, `seed/RustySeed.webgmex` | `GitArtifactLink` mixin, `dependsOn` Set + `depsSignature`, and seeded examples |
+| Tutorial Examples | `examples/blinky/`, `examples/smart-thermostat/` | Standalone runnable Cargo crates bound at machine directory level on `dev` |
+| Documentation Site | `docs/` | VitePress counter tutorial, demo showcases, concepts, and reference |
 | `webgme-git` Adapter | `src/routers/GitRouterAdapter/` | Mounts `webgme-git/src/routers/GitRouter` at `/routers/gitrouter` wired to `gmeAuth` + `ProjectRepoStore` |
 | Rust Sim / Check Router | `src/routers/RustSimRouter/` | `/routers/rustsim` (`GET /health`, `POST /generate`, `POST /check`, `POST /run`) |
-| Rusty Studio UI | `src/routers/StudioRouter/` | Served at `/routers/studio` (with `/docs` & self-hosted Monaco); reads/writes via `GME.classes.Client` |
-| Shared Rust Engine | `src/common/` | UMD modules (`rustContract.js`, `rustAnalyzer.js`, `rustCodegen.js`, `rustSimEngine.js`) |
-| WebGME Plugin | `src/plugins/GenerateRustCrate/` | Server/browser WebGME plugin exporting the generated Rust crate artifact |
+| Rusty Studio UI | `src/routers/StudioRouter/` | Fixed-layout interactive diagram, Monaco editor, simulator, and crate viewer |
+| Shared Rust Engine | `src/common/` | UMD modules (`rustContract.js`, `rustAnalyzer.js`, `rustCodegen.js`, `rustSimEngine.js`, `rustLayout.js`, `rustImporter.js`) |
+| WebGME Plugins | `src/plugins/GenerateRustCrate/`, `src/plugins/ImportFromGitHub/` | Export standalone Cargo crates or sweep GitHub directories to rebuild WebGME models |
 
 ## Quick Start
 

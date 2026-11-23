@@ -14,7 +14,17 @@
 const fs = require("fs");
 const path = require("path");
 const { execFileSync } = require("child_process");
-const { getStarterBlinkyModel, getSmartThermostatModel } = require("../src/common/rustContract");
+const {
+  getStarterBlinkyModel,
+  getSmartThermostatModel,
+  toSnakeCase,
+  toPascalCase,
+} = require("../src/common/rustContract");
+const {
+  extractDependencies,
+  serializeDepsSnapshot,
+} = require("../src/common/rustAnalyzer");
+const { computeLayout } = require("../src/common/rustLayout");
 
 const REPO_ROOT = path.resolve(__dirname, "..");
 const LANGUAGE_JSON = path.join(REPO_ROOT, "metamodel/Language.json");
@@ -77,7 +87,12 @@ function instantiateMachine(core, root, meta, model, rootPos) {
   core.setAttribute(smNode, "gitArtifactType", "dir");
   core.setRegistry(smNode, "position", rootPos || { x: 240, y: 120 });
 
+  // Compute crisp layered starter positions
+  const laidOut = computeLayout(model, { direction: "LR" });
+
   // Globals
+  const modelGlobalsWithIds = [];
+  const targetNodesByPath = new Map();
   (model.globals || []).forEach((g, idx) => {
     const gNode = core.createNode({ parent: smNode, base: globalVarMeta });
     core.setAttribute(gNode, "name", g.name);
@@ -85,19 +100,27 @@ function instantiateMachine(core, root, meta, model, rootPos) {
     core.setAttribute(gNode, "initialValue", g.initialValue);
     core.setAttribute(gNode, "description", g.description || "");
     core.setRegistry(gNode, "position", { x: 80, y: 420 + idx * 55 });
+    const gPath = core.getPath(gNode);
+    targetNodesByPath.set(gPath, gNode);
+    modelGlobalsWithIds.push({ ...g, id: gPath });
   });
 
   // Events
+  const modelEventsWithIds = [];
   (model.events || []).forEach((e, idx) => {
     const eNode = core.createNode({ parent: smNode, base: eventDefMeta });
     core.setAttribute(eNode, "name", e.name);
     core.setAttribute(eNode, "payloadType", e.payloadType || "");
     core.setAttribute(eNode, "description", e.description || "");
     core.setRegistry(eNode, "position", { x: 320, y: 420 + idx * 55 });
+    const ePath = core.getPath(eNode);
+    targetNodesByPath.set(ePath, eNode);
+    modelEventsWithIds.push({ ...e, id: ePath });
   });
 
-  // States
+  // States (gitOwner/Repo/Branch/Path left empty unless explicitly overridden, inheriting from StateMachine)
   const stateNodesByName = new Map();
+  const modelStatesWithIds = [];
   for (const st of model.states || []) {
     const sNode = core.createNode({ parent: smNode, base: stateMeta });
     core.setAttribute(sNode, "name", st.name);
@@ -106,17 +129,26 @@ function instantiateMachine(core, root, meta, model, rootPos) {
     core.setAttribute(sNode, "isFinal", Boolean(st.isFinal));
     core.setAttribute(sNode, "color", st.color || "#38bdf8");
     core.setAttribute(sNode, "codeCache", st.code || "");
-    core.setAttribute(sNode, "gitOwner", model.gitOwner);
-    core.setAttribute(sNode, "gitRepo", model.gitRepo);
-    core.setAttribute(sNode, "gitBranch", model.gitBranch);
-    core.setAttribute(sNode, "gitPath", st.gitPath);
+    core.setAttribute(sNode, "gitOwner", st.gitOwner || "");
+    core.setAttribute(sNode, "gitRepo", st.gitRepo || "");
+    core.setAttribute(sNode, "gitBranch", st.gitBranch || "");
+    core.setAttribute(sNode, "gitPath", st.gitPath || "");
     core.setAttribute(sNode, "gitArtifactType", "file");
     core.setAttribute(sNode, "gitBaseCommitSha", "");
-    core.setRegistry(sNode, "position", st.position || { x: 160, y: 160 });
+    const layoutPos = laidOut.nodesById[st.name] || laidOut.nodesById[st.id];
+    core.setRegistry(
+      sNode,
+      "position",
+      layoutPos ? { x: layoutPos.x, y: layoutPos.y } : st.position || { x: 160, y: 160 },
+    );
+    const sPath = core.getPath(sNode);
     stateNodesByName.set(st.name, sNode);
+    targetNodesByPath.set(sPath, sNode);
+    modelStatesWithIds.push({ ...st, id: sPath });
   }
 
   // Transitions
+  const transitionEntries = [];
   for (const tr of model.transitions || []) {
     const srcNode = stateNodesByName.get(tr.srcName);
     const dstNode = stateNodesByName.get(tr.dstName);
@@ -129,6 +161,36 @@ function instantiateMachine(core, root, meta, model, rootPos) {
     core.setAttribute(tNode, "priority", tr.priority);
     core.setPointer(tNode, "src", srcNode);
     core.setPointer(tNode, "dst", dstNode);
+    transitionEntries.push({ tr, tNode });
+  }
+
+  // Populate real WebGME `dependsOn` Set relationships + `depsSignature`
+  const modelWithIds = {
+    ...model,
+    globals: modelGlobalsWithIds,
+    events: modelEventsWithIds,
+    states: modelStatesWithIds,
+  };
+
+  for (const st of modelStatesWithIds) {
+    const sNode = stateNodesByName.get(st.name);
+    const deps = extractDependencies(st.code || "", modelWithIds);
+    core.setAttribute(sNode, "depsSignature", serializeDepsSnapshot(deps.snapshot));
+    core.createSet(sNode, "dependsOn");
+    for (const mid of deps.memberIds) {
+      const targetNode = targetNodesByPath.get(mid);
+      if (targetNode) core.addMember(sNode, "dependsOn", targetNode);
+    }
+  }
+
+  for (const { tr, tNode } of transitionEntries) {
+    const deps = extractDependencies(tr.guard || "", modelWithIds, { triggerEvent: tr.event });
+    core.setAttribute(tNode, "depsSignature", serializeDepsSnapshot(deps.snapshot));
+    core.createSet(tNode, "dependsOn");
+    for (const mid of deps.memberIds) {
+      const targetNode = targetNodesByPath.get(mid);
+      if (targetNode) core.addMember(tNode, "dependsOn", targetNode);
+    }
   }
 
   return core.getPath(smNode);
@@ -162,6 +224,14 @@ async function applyRustySeed(core, root, language) {
   // Ensure mixins are wired via Core API
   core.addMixin(stateMachine, core.getPath(gitLink));
   core.addMixin(stateMeta, core.getPath(gitLink));
+
+  // Computed Set relationship `dependsOn` from State & Transition -> GlobalVar / EventDef / State
+  for (const srcMeta of [stateMeta, transitionMeta]) {
+    core.setPointerMetaLimits(srcMeta, "dependsOn", -1, -1);
+    for (const targetMeta of [globalVarMeta, eventDefMeta, stateMeta]) {
+      core.setPointerMetaTarget(srcMeta, "dependsOn", targetMeta, -1, -1);
+    }
+  }
 
   // ROOT containment rules
   for (const m of metaNodes) {

@@ -11,7 +11,7 @@ Both `StateMachine` and `State` inherit attributes from the abstract `GitArtifac
 | `gitOwner` | Repository owner (e.g. `<your-username>` via **Bind GitHub Repo…**) | Repository owner (inherited or overridden) |
 | `gitRepo` | Repository name (e.g. `rusty`) | Repository name |
 | `gitBranch` | Target branch (e.g. `dev`) | Target branch |
-| `gitPath` | States folder (e.g. `examples/smart-thermostat/src/states`) | File path (e.g. `examples/smart-thermostat/src/states/heating.rs`) |
+| `gitPath` | Crate/states directory (e.g. `examples/smart-thermostat`) | Optional override path (defaults to `<machine_dir>/src/states/<state>.rs`) |
 | `gitArtifactType` | `dir` | `file` |
 | `gitBaseCommitSha` | — | Last synced Git commit SHA (updated automatically on commit) |
 

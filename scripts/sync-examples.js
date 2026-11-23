@@ -57,11 +57,11 @@ Self-contained, runnable Rust state-machine crates synchronized with Rusty Studi
 
 ## Why Fork & Use a \`dev\` Branch?
 
-In \`RustySeed.webgmex\`, both models already have their repository name, branch, and file paths pre-filled:
+In \`RustySeed.webgmex\`, both models already have their repository name, branch, and machine-level crate directory pre-filled:
 - \`gitOwner\`: \`""\` *(click **Bind GitHub Repo…** in Studio to bind \`<your-username>\`)*
 - \`gitRepo\`: \`rusty\`
 - \`gitBranch\`: \`dev\`
-- \`gitPath\`: \`examples/<name>/src/states/<state>.rs\`
+- \`gitPath\` (on \`StateMachine\`): \`examples/<name>\` *(states resolve automatically to \`<dir>/src/states/<state>.rs\`, with optional per-state override)*
 
 By forking \`kecso/rusty\` and creating a \`dev\` branch in your fork, you can safely test **Pull from GitHub**, live **Monaco editing**, **Commit & Push (\`⌘S\`)**, **auto-rebase**, and **HTTP 409 3-way merge** without touching \`main\` or needing push access to upstream.
 

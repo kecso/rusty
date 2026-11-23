@@ -33,8 +33,67 @@
     return toSnakeCase(input || "rusty_machine").replace(/_/g, "-");
   }
 
-  function defaultStatePath(stateName) {
+  function defaultStatePath(stateName, machine) {
+    if (machine && machine.gitPath) {
+      return resolveStateGitLink(machine, { name: stateName }).gitPath;
+    }
     return `src/states/${toSnakeCase(stateName)}.rs`;
+  }
+
+  function resolveMachineCrateRoot(machine) {
+    const raw = String((machine && machine.gitPath) || "")
+      .trim()
+      .replace(/^\/+|\/+$/g, "");
+    if (!raw || raw === "src/states" || raw === "states") return "";
+    if (raw.endsWith("/src/states")) return raw.slice(0, -"/src/states".length);
+    if (raw.endsWith("/states")) return raw.slice(0, -"/states".length);
+    return raw;
+  }
+
+  function resolveMachineStatesDir(machine) {
+    const raw = String((machine && machine.gitPath) || "")
+      .trim()
+      .replace(/^\/+|\/+$/g, "");
+    if (!raw) return "src/states";
+    if (raw === "states" || raw.endsWith("/states")) return raw;
+    return `${raw}/src/states`;
+  }
+
+  function resolveStateGitLink(machine, state) {
+    const m = machine || {};
+    const s = state || {};
+    const statesDir = resolveMachineStatesDir(m);
+    const derivedPath = `${statesDir}/${toSnakeCase(s.name)}.rs`;
+    const stateOwner = String(s.gitOwner || "").trim();
+    const stateRepo = String(s.gitRepo || "").trim();
+    const stateBranch = String(s.gitBranch || "").trim();
+    const statePath = String(s.gitPath || "").trim();
+
+    const machineOwner = String(m.gitOwner || "").trim();
+    const machineRepo = String(m.gitRepo || "").trim();
+    const machineBranch = String(m.gitBranch || "").trim();
+
+    const isOverridden = Boolean(
+      (statePath && statePath !== derivedPath) ||
+        (stateOwner && stateOwner !== machineOwner) ||
+        (stateRepo && stateRepo !== machineRepo) ||
+        (stateBranch && stateBranch !== (machineBranch || "main")),
+    );
+
+    return {
+      gitOwner: stateOwner || machineOwner,
+      gitRepo: stateRepo || machineRepo,
+      gitBranch: stateBranch || machineBranch || "main",
+      gitPath: statePath || derivedPath,
+      derivedPath,
+      isOverridden,
+    };
+  }
+
+  function resolveCrateFilePath(machine, relFile) {
+    const root = resolveMachineCrateRoot(machine);
+    const cleanRel = String(relFile || "").replace(/^\/+/, "");
+    return root ? `${root}/${cleanRel}` : cleanRel;
   }
 
   function defaultStateCode(stateName, outgoingTransitions) {
@@ -88,7 +147,7 @@ pub fn on_exit(_globals: &mut Globals) {
       gitOwner: "",
       gitRepo: "rusty",
       gitBranch: "dev",
-      gitPath: "examples/blinky/src/states",
+      gitPath: "examples/blinky",
       globals: [
         {
           name: "led_high",
@@ -129,7 +188,7 @@ pub fn on_exit(_globals: &mut Globals) {
           isInitial: true,
           isFinal: false,
           color: "#38bdf8",
-          gitPath: "examples/blinky/src/states/idle.rs",
+          gitPath: "",
           position: { x: 110, y: 180 },
           code: `//! State module: Idle
 //! Waiting for Start command; ensures LED is driven low.
@@ -160,7 +219,7 @@ pub fn on_exit(_globals: &mut Globals) {}
           isInitial: false,
           isFinal: false,
           color: "#22c55e",
-          gitPath: "examples/blinky/src/states/led_on.rs",
+          gitPath: "",
           position: { x: 390, y: 90 },
           code: `//! State module: LedOn
 //! Drives LED high and increments blink_count on entry.
@@ -197,7 +256,7 @@ pub fn on_exit(_globals: &mut Globals) {}
           isInitial: false,
           isFinal: false,
           color: "#f59e0b",
-          gitPath: "examples/blinky/src/states/led_off.rs",
+          gitPath: "",
           position: { x: 670, y: 180 },
           code: `//! State module: LedOff
 //! Drives LED low and cools down slightly before the next pulse.
@@ -235,7 +294,7 @@ pub fn on_exit(_globals: &mut Globals) {}
           isInitial: false,
           isFinal: false,
           color: "#ef4444",
-          gitPath: "examples/blinky/src/states/fault.rs",
+          gitPath: "",
           position: { x: 390, y: 310 },
           code: `//! State module: Fault
 //! Latched safety state — keeps LED off until operator sends Reset.
@@ -287,7 +346,7 @@ pub fn on_exit(_globals: &mut Globals) {}
       gitOwner: "",
       gitRepo: "rusty",
       gitBranch: "dev",
-      gitPath: "examples/smart-thermostat/src/states",
+      gitPath: "examples/smart-thermostat",
       globals: [
         {
           name: "current_temp_c",
@@ -366,7 +425,7 @@ pub fn on_exit(_globals: &mut Globals) {}
           isInitial: true,
           isFinal: false,
           color: "#38bdf8",
-          gitPath: "examples/smart-thermostat/src/states/standby.rs",
+          gitPath: "",
           position: { x: 70, y: 200 },
           code: `//! State module: Standby
 //! Applies passive ambient thermal drift and checks deadband thresholds.
@@ -424,7 +483,7 @@ pub fn on_exit(_globals: &mut Globals) {}
           isInitial: false,
           isFinal: false,
           color: "#f97316",
-          gitPath: "examples/smart-thermostat/src/states/heating.rs",
+          gitPath: "",
           position: { x: 350, y: 65 },
           code: `//! State module: Heating
 //! Drives heater, computes thermal gain minus ambient loss, and logs energy_wh.
@@ -487,7 +546,7 @@ pub fn on_exit(_globals: &mut Globals) {}
           isInitial: false,
           isFinal: false,
           color: "#06b6d4",
-          gitPath: "examples/smart-thermostat/src/states/cooling.rs",
+          gitPath: "",
           position: { x: 350, y: 335 },
           code: `//! State module: Cooling
 //! Drives compressor, computes cooling delta plus ambient gain, and logs energy_wh.
@@ -550,7 +609,7 @@ pub fn on_exit(_globals: &mut Globals) {}
           isInitial: false,
           isFinal: false,
           color: "#eab308",
-          gitPath: "examples/smart-thermostat/src/states/cooldown.rs",
+          gitPath: "",
           position: { x: 640, y: 120 },
           code: `//! State module: Cooldown
 //! Rests actuator for 3 ticks while allowing passive thermal equalization.
@@ -594,7 +653,7 @@ pub fn on_exit(_globals: &mut Globals) {}
           isInitial: false,
           isFinal: false,
           color: "#ef4444",
-          gitPath: "examples/smart-thermostat/src/states/safe_lockout.rs",
+          gitPath: "",
           position: { x: 640, y: 300 },
           code: `//! State module: SafeLockout
 //! Latched fault state; disables HVAC outputs until operator sends Reset.
@@ -649,6 +708,10 @@ pub fn on_exit(_globals: &mut Globals) {}
     toCrateName,
     defaultStatePath,
     defaultStateCode,
+    resolveMachineCrateRoot,
+    resolveMachineStatesDir,
+    resolveStateGitLink,
+    resolveCrateFilePath,
     getStarterBlinkyModel,
     getSmartThermostatModel,
     getAllExampleModels,

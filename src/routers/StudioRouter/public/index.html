@@ -4,7 +4,8 @@
   <base href="/" />
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Rusty Studio — WebGME + webgme-git Rust State Machine IDE</title>
+  <title>Rusty Studio</title>
+  <link rel="icon" type="image/svg+xml" href="/routers/studio/favicon.svg" />
   <link rel="stylesheet" href="/routers/studio/styles.css" />
 </head>
 <body>
@@ -13,11 +14,27 @@
     <header class="topbar">
       <div class="topbar-left">
         <div class="brand">
-          <span class="brand-icon">🦀</span>
-          <div>
-            <div class="brand-title">Rusty Studio</div>
-            <div class="brand-sub">WebGME Topology · webgme-git Rust States</div>
-          </div>
+          <svg class="brand-svg" viewBox="0 0 64 64" width="26" height="26" aria-hidden="true">
+            <defs>
+              <linearGradient id="brandRustMetal" x1="8" y1="8" x2="56" y2="56" gradientUnits="userSpaceOnUse">
+                <stop offset="0%" stop-color="#94a3b8"/>
+                <stop offset="50%" stop-color="#64748b"/>
+                <stop offset="100%" stop-color="#7c2d12"/>
+              </linearGradient>
+              <linearGradient id="brandRustOxide" x1="12" y1="12" x2="52" y2="52" gradientUnits="userSpaceOnUse">
+                <stop offset="0%" stop-color="#ea580c"/>
+                <stop offset="100%" stop-color="#9a3412"/>
+              </linearGradient>
+            </defs>
+            <path d="M32 4 L35.5 11.5 L42.5 7 L43 15.2 L51 13.5 L48.3 21.4 L56.4 22.8 L51.1 29.2 L58 33.8 L50.8 37.8 L55.4 44.5 L47.2 45.2 L48.6 53 L40.8 50.4 L39.2 57.5 L33 52.4 L28 57.5 L26.5 50.2 L18.5 52.8 L20 45 L11.8 44.2 L16.2 37.5 L9.2 33.5 L16.2 29 L11 22.5 L19 21.2 L16.2 13.2 L24.2 15 L25 7 L31.5 11.6 Z"
+                  fill="url(#brandRustMetal)" stroke="#431407" stroke-width="1.8" stroke-linejoin="round"/>
+            <path d="M18 24 A17 17 0 0 1 44 17 A15 15 0 0 0 21 31 Z" fill="url(#brandRustOxide)" opacity="0.85"/>
+            <circle cx="33.5" cy="31" r="12" fill="#1e293b" stroke="#ea580c" stroke-width="2"/>
+            <circle cx="33.5" cy="31" r="4" fill="#c2410c"/>
+            <path d="M6 39 H58 V44 H53 V55 H45 V45 H21 V55 H13 V44 H6 Z" fill="#334155" stroke="#0f172a" stroke-width="1.6"/>
+            <rect x="6" y="38" width="52" height="4" rx="1.5" fill="url(#brandRustOxide)"/>
+          </svg>
+          <div class="brand-title">Rusty Studio</div>
         </div>
 
         <div class="divider-v"></div>
@@ -45,45 +62,58 @@
       </div>
     </header>
 
-    <!-- GitHub Repo Binding Bar (webgme-git showcase) -->
+    <!-- GitHub Repo Binding Bar -->
     <div class="gitbar">
       <div class="gitbar-left">
-        <span class="gitbar-label">GitArtifactLink Repo:</span>
+        <span class="gitbar-label">Git Repository:</span>
         <code id="machineRepoDisplay" class="repo-pill">Unbound (local draft)</code>
         <button id="btnPickRepo" class="btn btn-xs">Bind GitHub Repo…</button>
-        <button id="btnPullAll" class="btn btn-xs" title="Fetch all state .rs files from GitHub via gitrouter">↓ Pull States</button>
-        <button id="btnSyncAll" class="btn btn-xs btn-primary" title="Atomic commit all modified states via webgme-git">↑ Sync All States</button>
+        <button id="btnImportGitHub" class="btn btn-xs" title="Sweep a GitHub crate or states directory to rebuild a WebGME StateMachine">↓ Import from GitHub…</button>
+        <button id="btnPullAll" class="btn btn-xs" title="Fetch all state .rs files from GitHub">↓ Pull States</button>
+        <button id="btnSyncAll" class="btn btn-xs btn-primary" title="Commit all modified state files via webgme-git">↑ Sync All States</button>
       </div>
       <div class="gitbar-right">
         <button id="btnRustCheck" class="btn btn-xs btn-success" title="Run cargo check via /routers/rustsim">✓ Verify with rustc</button>
-        <button id="btnPushCrate" class="btn btn-xs" title="Commit full generated Cargo crate to GitHub">Push Full Crate</button>
+        <button id="btnPushCrate" class="btn btn-xs" title="Commit complete standalone Cargo crate to GitHub">Push Full Crate</button>
         <span id="rustcBadge" class="badge badge-muted">rustc: …</span>
       </div>
     </div>
 
     <!-- Main 3-Column Studio Body -->
-    <main class="workspace">
-      <!-- Left Sidebar: Model Explorer (States, Globals, Events) -->
-      <aside class="sidebar">
-        <section class="panel-section">
+    <main id="workspaceGrid" class="workspace">
+      <!-- Left Sidebar: Model Explorer (Collapsible States, Globals, Events) -->
+      <aside id="leftSidebar" class="sidebar">
+        <section class="panel-section" data-section-name="states">
           <div class="section-header">
-            <h3>States</h3>
+            <button type="button" class="section-toggle" data-collapse-section="states" aria-expanded="true" title="Collapse/expand States list">
+              <span class="chevron">▾</span>
+              <h3>States</h3>
+              <span id="countStates" class="count-pill">0</span>
+            </button>
             <button id="btnAddState" class="btn btn-xs btn-accent">+ State</button>
           </div>
           <ul id="stateList" class="item-list"></ul>
         </section>
 
-        <section class="panel-section">
+        <section class="panel-section" data-section-name="globals">
           <div class="section-header">
-            <h3>Globals <code>pub struct Globals</code></h3>
+            <button type="button" class="section-toggle" data-collapse-section="globals" aria-expanded="true" title="Collapse/expand Globals list">
+              <span class="chevron">▾</span>
+              <h3>Globals</h3>
+              <span id="countGlobals" class="count-pill">0</span>
+            </button>
             <button id="btnAddGlobal" class="btn btn-xs">+ Var</button>
           </div>
           <ul id="globalList" class="item-list"></ul>
         </section>
 
-        <section class="panel-section">
+        <section class="panel-section" data-section-name="events">
           <div class="section-header">
-            <h3>Events <code>pub enum Event</code></h3>
+            <button type="button" class="section-toggle" data-collapse-section="events" aria-expanded="true" title="Collapse/expand Events legend">
+              <span class="chevron">▾</span>
+              <h3>Events</h3>
+              <span id="countEvents" class="count-pill">0</span>
+            </button>
             <button id="btnAddEvent" class="btn btn-xs">+ Event</button>
           </div>
           <ul id="eventList" class="item-list"></ul>
@@ -93,20 +123,28 @@
       <!-- Center: Diagram Canvas + Crate Inspector -->
       <section class="center-pane">
         <div class="center-tabs">
-          <button class="tab-btn active" data-center-tab="canvas">State Machine Diagram</button>
-          <button class="tab-btn" data-center-tab="crate">Generated Rust Crate</button>
+          <button id="btnToggleLeftPane" class="btn btn-xs btn-pane-toggle" title="Hide/show left Explorer panel">◧</button>
+          <button class="tab-btn active" data-center-tab="canvas">Diagram</button>
+          <button class="tab-btn" data-center-tab="crate">Crate</button>
           <div class="center-toolbar" id="canvasToolbar">
-            <button id="btnConnectMode" class="btn btn-xs" title="Click source state, then target state to create a WebGME Transition">⇢ Add Transition</button>
-            <button id="btnAutoLayout" class="btn btn-xs" title="Arrange states neatly and save positions to WebGME">⊞ Auto-Layout</button>
-            <span id="simActiveBanner" class="sim-banner hidden">SIMULATING: <strong id="simActiveStateName">-</strong></span>
+            <button id="btnConnectMode" class="btn btn-xs" title="Click source state, then destination state to add a transition">⇢ Edge</button>
+            <button id="btnLayoutDir" class="btn btn-xs" title="Toggle fixed layered layout orientation (LR / TB)">⇄ LR</button>
+            <button id="btnEdgeLabels" class="btn btn-xs btn-active" title="Toggle compact event badges (A, B, C) vs full text labels">🏷 Badges</button>
+            <span id="simActiveBanner" class="sim-banner hidden">ACTIVE: <strong id="simActiveStateName">-</strong></span>
           </div>
+          <button id="btnToggleRightPane" class="btn btn-xs btn-pane-toggle" title="Hide/show right Inspector / Simulator panel">◨</button>
         </div>
 
         <div id="tabCanvas" class="center-content active">
+          <!-- Design-Change Impact Banner -->
+          <div id="impactBanner" class="impact-banner hidden"></div>
+
           <div id="canvasHost" class="canvas-host">
             <svg id="smSvg" class="sm-svg" xmlns="http://www.w3.org/2000/svg"></svg>
-            <div id="canvasHint" class="canvas-hint">Drag states to update WebGME layout · Click a state or transition to inspect</div>
+            <div id="canvasTooltip" class="canvas-tooltip hidden"></div>
+            <div id="canvasHint" class="canvas-hint">Fixed layered layout · Hover edge badges for Event &amp; [Guard] details · Click to inspect</div>
           </div>
+
           <!-- Compiler Diagnostics Drawer -->
           <div id="diagDrawer" class="diag-drawer hidden">
             <div class="diag-header">
@@ -135,16 +173,16 @@
       </section>
 
       <!-- Right Pane: Inspector / Rust Code Editor / Dynamic Simulator -->
-      <aside class="right-pane">
+      <aside id="rightPane" class="right-pane">
         <div class="right-tabs">
           <button class="tab-btn active" data-right-tab="inspector">Inspector &amp; Rust</button>
-          <button class="tab-btn" data-right-tab="simulator">Dynamic Simulator</button>
+          <button class="tab-btn" data-right-tab="simulator">Simulator</button>
         </div>
 
         <!-- Tab 1: Node Inspector + Rust State Editor -->
         <div id="tabInspector" class="right-content active">
           <div id="inspectorEmpty" class="empty-state">
-            Select a <strong>State</strong> or <strong>Transition</strong> on the diagram to edit its WebGME attributes and synchronized Rust code.
+            Select a <strong>State</strong> or <strong>Transition</strong> on the diagram to edit its design properties, guards, dependencies, and Rust code.
           </div>
 
           <!-- State Inspector -->
@@ -156,6 +194,8 @@
               </div>
               <button id="btnDeleteState" class="btn btn-xs btn-danger">Delete</button>
             </div>
+
+            <div id="stateImpactBox" class="impact-box hidden"></div>
 
             <div class="form-grid">
               <label>
@@ -176,40 +216,50 @@
             <div class="checkbox-row">
               <label><input id="inpStateInitial" type="checkbox" /> Initial State</label>
               <label><input id="inpStateFinal" type="checkbox" /> Final State</label>
+              <button id="btnSaveStateMeta" class="btn btn-xs btn-primary" style="margin-left: auto;">Save Design</button>
             </div>
 
             <div class="subsection">
               <div class="subsection-title">
-                <span>GitArtifactLink (webgme-git)</span>
+                <span>Git File Location</span>
                 <span id="stateSyncBadge" class="badge badge-muted">Local</span>
               </div>
-              <div class="form-grid">
-                <label>
-                  <span>gitOwner</span>
-                  <input id="inpGitOwner" type="text" placeholder="owner" />
-                </label>
-                <label>
-                  <span>gitRepo</span>
-                  <input id="inpGitRepo" type="text" placeholder="repo" />
-                </label>
+              <div class="effective-git-row">
+                <code id="stateGitEffective">-</code>
+                <span id="stateShaChip" class="muted-mono">sha: <span id="stateShaDisplay">none</span></span>
               </div>
-              <div class="form-grid">
-                <label>
-                  <span>gitBranch</span>
-                  <input id="inpGitBranch" type="text" placeholder="main" />
-                </label>
-                <label>
-                  <span>gitPath</span>
-                  <input id="inpGitPath" type="text" placeholder="src/states/idle.rs" />
-                </label>
+              <details id="stateGitOverrideDetails" class="override-details">
+                <summary>Override Git path / repo for this state (optional)</summary>
+                <div class="override-body">
+                  <div class="form-grid">
+                    <label>
+                      <span>Owner Override</span>
+                      <input id="inpGitOwner" type="text" placeholder="(inherit from machine)" />
+                    </label>
+                    <label>
+                      <span>Repo Override</span>
+                      <input id="inpGitRepo" type="text" placeholder="(inherit from machine)" />
+                    </label>
+                  </div>
+                  <div class="form-grid">
+                    <label>
+                      <span>Branch Override</span>
+                      <input id="inpGitBranch" type="text" placeholder="(inherit from machine)" />
+                    </label>
+                    <label>
+                      <span>Path Override</span>
+                      <input id="inpGitPath" type="text" placeholder="(auto from machine dir)" />
+                    </label>
+                  </div>
+                </div>
+              </details>
+            </div>
+
+            <div class="subsection">
+              <div class="subsection-title">
+                <span>Design Dependencies (<code>dependsOn</code> Set)</span>
               </div>
-              <div class="sha-row">
-                <span>Base SHA:</span>
-                <code id="stateShaDisplay" class="muted-mono">none</code>
-              </div>
-              <div class="btn-row">
-                <button id="btnSaveStateMeta" class="btn btn-xs btn-primary">Save GitArtifactLink to WebGME</button>
-              </div>
+              <div id="stateDependsOnList" class="deps-chips"></div>
             </div>
 
             <div class="subsection code-section">
@@ -231,7 +281,7 @@
               <div class="btn-row">
                 <button id="btnCommitState" class="btn btn-xs btn-accent" title="Save to WebGME + atomic Commit & Push to GitHub (Cmd/Ctrl+S)">↑ Commit &amp; Push (⌘S)</button>
                 <button id="btnSaveCodeCache" class="btn btn-xs btn-primary">Save Draft to WebGME</button>
-                <button id="btnPullState" class="btn btn-xs" title="Reload latest content from GitHub via Octokit">↓ Reload GitHub</button>
+                <button id="btnPullState" class="btn btn-xs" title="Reload latest content from GitHub">↓ Reload GitHub</button>
               </div>
             </div>
           </div>
@@ -245,6 +295,9 @@
               </div>
               <button id="btnDeleteTransition" class="btn btn-xs btn-danger">Delete</button>
             </div>
+
+            <div id="transImpactBox" class="impact-box hidden"></div>
+
             <label class="form-row">
               <span>Name</span>
               <input id="inpTransName" type="text" />
@@ -261,20 +314,29 @@
               </label>
             </div>
             <label class="form-row">
-              <span>Rust Guard Expression (optional)</span>
+              <span>Rust Guard Expression (optional, compiled into <code>src/machine.rs</code>)</span>
               <input id="inpTransGuard" type="text" placeholder="e.g. globals.blink_count >= globals.max_blinks" />
             </label>
+            <ul id="transGuardDiag" class="problems-list hidden"></ul>
             <label class="form-row">
               <span>Action Statement (optional)</span>
               <input id="inpTransAction" type="text" placeholder="e.g. globals.blink_count = 0;" />
             </label>
+
+            <div class="subsection">
+              <div class="subsection-title">
+                <span>Guard Dependencies (<code>dependsOn</code> Set)</span>
+              </div>
+              <div id="transDependsOnList" class="deps-chips"></div>
+            </div>
+
             <div class="btn-row">
               <button id="btnSaveTransition" class="btn btn-xs btn-primary">Save Transition to WebGME</button>
             </div>
           </div>
         </div>
 
-        <!-- Tab 2: Dynamic Web Simulator -->
+        <!-- Tab 2: Simulator -->
         <div id="tabSimulator" class="right-content">
           <div class="sim-controls-card">
             <div class="sim-top-row">
@@ -289,29 +351,29 @@
             </div>
 
             <div class="btn-row">
-              <button id="btnSimPlay" class="btn btn-sm btn-success">▶ Auto-Tick</button>
+              <button id="btnSimStepTick" class="btn btn-sm btn-primary">⏭ Step Tick</button>
+              <button id="btnSimPlay" class="btn btn-sm">▶ Auto-Tick</button>
               <button id="btnSimPause" class="btn btn-sm hidden">⏸ Pause</button>
-              <button id="btnSimStepTick" class="btn btn-sm">⏭ Step Tick</button>
               <button id="btnSimReset" class="btn btn-sm">↺ Reset</button>
             </div>
 
             <label class="speed-row">
-              <span>Tick Interval: <strong id="simSpeedLabel">800ms</strong></span>
+              <span>Interval: <strong id="simSpeedLabel">800ms</strong></span>
               <input id="simSpeedRange" type="range" min="150" max="2000" step="50" value="800" />
             </label>
           </div>
 
           <div class="subsection">
             <div class="subsection-title">
-              <span>Inject Event</span>
-              <span class="muted-mono">WebGME EventDefs</span>
+              <span>Dispatch Event</span>
+              <span class="muted-mono">Events</span>
             </div>
             <div id="simEventButtons" class="event-btn-grid"></div>
           </div>
 
           <div class="subsection">
             <div class="subsection-title">
-              <span>Live Globals (click value to inject fault/override)</span>
+              <span>Live Globals (click value to override)</span>
             </div>
             <table class="globals-table">
               <thead>
@@ -324,7 +386,7 @@
           <div class="subsection">
             <div class="subsection-title">
               <span>Execution Trace</span>
-              <button id="btnVerifyNativeTrace" class="btn btn-xs btn-accent" title="Replay this exact event trace in compiled native Rust via /routers/rustsim/run">🦀 Verify in Native Rust</button>
+              <button id="btnVerifyNativeTrace" class="btn btn-xs btn-accent" title="Compile and replay this trace with native cargo">⚙ Verify in Native Rust</button>
             </div>
             <div id="nativeVerifyBanner" class="verify-banner hidden"></div>
             <ul id="simTraceList" class="trace-list"></ul>
@@ -334,40 +396,81 @@
     </main>
   </div>
 
-  <!-- Modal: GitHub Repo Picker -->
+  <!-- Modal: GitHub Repo Binding (Machine Directory Level) -->
   <div id="repoModal" class="modal-backdrop hidden">
     <div class="modal-card">
       <div class="modal-header">
-        <h3>Bind GitHub Repository (webgme-git)</h3>
+        <h3>Bind Machine Directory on GitHub</h3>
         <button class="btn btn-xs" data-close-modal="repoModal">✕</button>
       </div>
       <div class="modal-body">
-        <p class="muted">Select a repository accessible via your GitHub App installation, or enter owner/repo manually.</p>
+        <p class="muted">
+          Configure Git at the <strong>StateMachine directory level</strong>. Individual states automatically map to
+          <code>&lt;dir&gt;/src/states/&lt;state&gt;.rs</code> unless overridden in the State inspector.
+        </p>
         <div id="repoPickerStatus" class="muted-mono"></div>
         <label class="form-row">
           <span>Installed Repositories</span>
           <select id="repoDropdown"></select>
         </label>
         <div class="form-grid">
-          <label><span>Owner</span><input id="modalGitOwner" type="text" /></label>
-          <label><span>Repo</span><input id="modalGitRepo" type="text" /></label>
+          <label><span>Owner</span><input id="modalGitOwner" type="text" placeholder="e.g. your-github-username" /></label>
+          <label><span>Repo</span><input id="modalGitRepo" type="text" placeholder="e.g. rusty" /></label>
         </div>
         <div class="form-grid">
           <label>
             <span>Branch</span>
-            <input id="modalGitBranch" type="text" value="main" list="branchSuggestions" />
+            <input id="modalGitBranch" type="text" value="dev" list="branchSuggestions" />
             <datalist id="branchSuggestions"></datalist>
           </label>
-          <label><span>States Directory</span><input id="modalGitDir" type="text" value="src/states" /></label>
+          <label><span>Machine Directory</span><input id="modalGitDir" type="text" value="examples/smart-thermostat" /></label>
         </div>
         <label class="checkbox-row">
-          <input id="modalApplyToAllStates" type="checkbox" checked />
-          Also update <code>gitOwner</code>, <code>gitRepo</code>, <code>gitBranch</code> on all States in this StateMachine
+          <input id="modalClearStateOverrides" type="checkbox" checked />
+          Use machine-level directory cleanly across all States (clear per-state overrides)
         </label>
       </div>
       <div class="modal-footer">
         <button class="btn btn-sm" data-close-modal="repoModal">Cancel</button>
-        <button id="btnConfirmRepoBind" class="btn btn-sm btn-primary">Bind &amp; Save to WebGME</button>
+        <button id="btnConfirmRepoBind" class="btn btn-sm btn-primary">Bind &amp; Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Import StateMachine from GitHub Directory -->
+  <div id="importModal" class="modal-backdrop hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>Import StateMachine from GitHub Directory</h3>
+        <button class="btn btn-xs" data-close-modal="importModal">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="muted">
+          Point to a GitHub directory containing a Rust crate (<code>Cargo.toml</code>, <code>src/types.rs</code>,
+          <code>src/machine.rs</code>, <code>src/states/*.rs</code>) or standalone state <code>*.rs</code> files.
+          Rusty sweeps the directory and reconstructs the full WebGME design.
+        </p>
+        <div class="btn-row">
+          <button type="button" class="btn btn-xs" data-import-preset="kecso/rusty/dev/examples/smart-thermostat">Preset: SmartThermostat</button>
+          <button type="button" class="btn btn-xs" data-import-preset="kecso/rusty/dev/examples/blinky">Preset: Blinky</button>
+        </div>
+        <div class="form-grid">
+          <label><span>Owner</span><input id="importGitOwner" type="text" value="kecso" /></label>
+          <label><span>Repo</span><input id="importGitRepo" type="text" value="rusty" /></label>
+        </div>
+        <div class="form-grid">
+          <label><span>Branch / Ref</span><input id="importGitBranch" type="text" value="dev" /></label>
+          <label><span>Directory Path</span><input id="importGitDir" type="text" value="examples/smart-thermostat" /></label>
+        </div>
+        <label class="form-row">
+          <span>New StateMachine Name (optional — leave blank to infer from crate)</span>
+          <input id="importMachineName" type="text" placeholder="e.g. ImportedThermostat" />
+        </label>
+        <div id="importModalStatus" class="muted-mono"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-sm" data-close-modal="importModal">Cancel</button>
+        <button id="btnConfirmImportGitHub" class="btn btn-sm btn-primary">Sweep &amp; Import StateMachine</button>
       </div>
     </div>
   </div>
@@ -376,7 +479,7 @@
   <div id="conflictModal" class="modal-backdrop hidden">
     <div class="modal-card modal-wide">
       <div class="modal-header">
-        <h3>3-Way Merge Conflict (HTTP 409 from webgme-git)</h3>
+        <h3>3-Way Merge Conflict (HTTP 409)</h3>
         <button class="btn btn-xs" data-close-modal="conflictModal">✕</button>
       </div>
       <div class="modal-body">
@@ -411,6 +514,21 @@
     </div>
   </div>
 
+  <!-- Modal: Add / Edit Design Element (State / GlobalVar / EventDef / Machine / Transition) -->
+  <div id="elementModal" class="modal-backdrop hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 id="elementModalTitle">Design Element</h3>
+        <button class="btn btn-xs" data-close-modal="elementModal">✕</button>
+      </div>
+      <div class="modal-body" id="elementModalBody"></div>
+      <div class="modal-footer">
+        <button class="btn btn-sm" data-close-modal="elementModal">Cancel</button>
+        <button id="btnConfirmElementModal" class="btn btn-sm btn-primary">Save</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Toast Stack -->
   <div id="toastStack" class="toast-stack"></div>
 
@@ -422,6 +540,8 @@
   <script src="/routers/studio/common/rustCodegen.js"></script>
   <script src="/routers/studio/common/rustSimEngine.js"></script>
   <script src="/routers/studio/common/rustAnalyzer.js"></script>
+  <script src="/routers/studio/common/rustLayout.js"></script>
+  <script src="/routers/studio/common/rustImporter.js"></script>
   <!-- Rusty Studio Modules -->
   <script src="/routers/studio/webgmeBridge.js"></script>
   <script src="/routers/studio/gitSyncClient.js"></script>

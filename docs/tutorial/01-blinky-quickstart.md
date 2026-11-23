@@ -1,48 +1,36 @@
-# Tutorial 1: BlinkyController Quickstart
+# Demo Showcase: BlinkyController
 
-**`BlinkyController`** (`examples/blinky/`) is Rusty's "hello world" hardware state machine. In 5 minutes you will inspect its WebGME topology, simulate a full blink loop, inject a live thermal fault, and verify parity against compiled native Rust.
+**`BlinkyController`** (`examples/blinky/`) is a pre-seeded "hello world" hardware state machine included in `RustyDemo`. While the [Counter Tutorial](./00-build-a-counter.md) teaches you how to build a machine from scratch, this showcase lets you immediately explore a multi-state blink loop, thermal fault protection, and native Rust verification.
 
-![BlinkyController simulation and native Rust parity](/images/demo-overview-blinky.gif)
+![BlinkyController fixed layout, event badges, simulation, and native Rust parity](/images/demo-overview-blinky.gif)
 
-## 1. Open Rusty Studio
+## 1. Open `BlinkyController` in Rusty Studio
 
 Start the server (`npm start` from your cloned fork) and open `http://127.0.0.1:8888/routers/studio`.
 
-On first boot, Studio seeds **`RustyDemo`** from `RustySeed.webgmex` and selects **`BlinkyController`**. You will see four states on the SVG canvas:
+On first boot, Studio seeds **`RustyDemo`** from `RustySeed.webgmex` and opens **`BlinkyController`**. On the **Diagram** canvas, you'll see a clean fixed layered layout with four states:
 
 - **`Idle`** (`INIT`) — ensures `globals.led_high = false`
-- **`LedOn`** — sets `led_high = true`, increments `blink_count += 1` and `temperature_c += 2`
-- **`LedOff`** — sets `led_high = false`, cools `temperature_c -= 1`, checks `blink_count >= max_blinks`
-- **`Fault`** — safe latched state until `Event::Reset`
+- **`LedOn`** — drives `led_high = true`, increments `blink_count` and `temperature_c`
+- **`LedOff`** — drives `led_high = false`, cools down slightly, returns to `Idle` at `max_blinks`
+- **`Fault`** — safe latched state until `Reset`
 
-## 2. Inspect State Code in Monaco
+Notice how transitions use compact letter badges (`A`, `B`, `C`, `D`, `E`) with distinct colors and dash styles matched to the **Events** legend on the left—hover any connector to inspect its full event and guard expression (`[globals.temperature_c >= 75]`) in a floating tooltip, or toggle **`⇄ LR` / `⇄ TB`** to flip layout direction.
 
-1. Click **`LedOn`** on the canvas or in the left **States** sidebar.
-2. In the right **Inspector & Rust** pane, review its `GitArtifactLink` coordinates (`gitRepo = rusty`, `gitBranch = dev`, `gitPath = examples/blinky/src/states/led_on.rs`, with `gitOwner` bound to `<your-username>` when you connect your fork in [Tutorial 4](./04-github-sync-dev.md)).
-3. Look at the Monaco editor and analyzer status bar (`✓ 0 errors` in under 1ms).
+## 2. Inspect State Code & Machine-Level Git Location
 
-## 3. Run the Dynamic Browser Simulator
+1. Click **`LedOn`** on the diagram or in the collapsible **States** sidebar.
+2. In the right **Inspector & Rust** pane, see its inherited **Git File Location** (`examples/blinky/src/states/led_on.rs`, derived automatically from the machine's `examples/blinky` directory) alongside its tracked `dependsOn` references and live `< 1 ms` Monaco diagnostics.
 
-1. Switch the right pane tab to **Dynamic Simulator**.
-2. Click **`Start`** under **Inject Event**.
-   - The **`LedOn`** box glows green on the diagram and an animated pulse travels along the `Start` arrow!
-   - Watch **Live Globals**: `led_high` flips to `true`, `blink_count` becomes `1`, `temperature_c` becomes `30`.
-3. Click **`▶ Auto-Tick`** (or press **`⏭ Step Tick`** repeatedly).
-   - Every `Tick` alternates `LedOn` ↔ `LedOff` until `blink_count` reaches `max_blinks` (`5`), then automatically returns to `Idle`.
+## 3. Run the Simulator & Trigger a Fault
 
-## 4. Inject a Live Thermal Fault
+1. Switch the right pane tab to **Simulator**.
+2. Click **`Start`** under **Dispatch Event**—**`LedOn`** glows green on the diagram and `blink_count` becomes `1`.
+3. Click **`⏭ Step Tick`** repeatedly (or override `temperature_c` to `80` in **Live Globals** and step **`Tick`** to trigger **`Fault`**).
+4. Click **`Reset`** to return cleanly to **`Idle`**.
 
-1. Click **`Start`** again so the machine enters `LedOn`.
-2. In the **Live Globals** table, click the value button next to `temperature_c` and enter `80`.
-3. Click **`⏭ Step Tick`**.
-   - `LedOn::on_event` sees `globals.temperature_c >= 75` and transitions immediately to **`Fault`**, turning `led_high` back to `false`.
-4. Click **`Reset`** to return cleanly to `Idle`.
+## 4. Verify Behavior in Native Rust
 
-## 5. Verify Native Rust Parity
+Click **`⚙ Verify in Native Rust`** above the **Execution Trace**. Rusty generates the standalone crate, compiles it with `cargo`, replays your exact event sequence, and confirms the native Rust binary produces identical final state and globals.
 
-Click **`🦀 Verify in Native Rust`** above the Execution Trace:
-
-- Studio sends your WebGME model and exact injected event sequence to `/routers/rustsim/run`.
-- The server generates the Rust crate, compiles it with `cargo run --offline`, replays your trace in the compiled binary, and confirms the native binary ended in the exact same state (`✓ Native Rust matches browser sim!`).
-
-Next: continue to [Tutorial 2: SmartThermostat (Full Showcase)](./02-smart-thermostat.md) to work with floating-point physics, payload events, and self-emitted events!
+Next: inspect the [SmartThermostat Showcase](./02-smart-thermostat.md) or follow the hands-on [Counter Tutorial](./00-build-a-counter.md).

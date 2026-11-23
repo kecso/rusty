@@ -3,44 +3,44 @@ layout: home
 
 hero:
   name: "Rusty Studio"
-  text: "WebGME State Machines Meet GitHub-Synced Rust"
-  tagline: "Model topology and shared globals in WebGME. Author per-state Rust code in Monaco with sub-millisecond edit-time checks, sync atomically via webgme-git, and simulate live in the browser or native cargo."
+  text: "Visual State Machine Design Meets Git-Backed Rust"
+  tagline: "Design your machines visually in a version-controlled database, write state code stored natively in Git, catch mismatches as you type or reshape your design, and ship completely standalone Rust crates."
   actions:
     - theme: brand
+      text: Start the Counter Tutorial
+      link: /tutorial/00-build-a-counter
+    - theme: alt
       text: Getting Started
       link: /getting-started
     - theme: alt
-      text: SmartThermostat Tutorial
+      text: Demo Showcases
       link: /tutorial/02-smart-thermostat
-    - theme: alt
-      text: GitHub Sync on dev
-      link: /tutorial/04-github-sync-dev
 
 features:
-  - icon: 🧬
-    title: WebGME Owns Topology & Data
-    details: StateMachine, State, Transition, GlobalVar, and EventDef live in WebGME. The Studio UI reads live territories and commits every edit via GME.classes.Client transactions.
-  - icon: 🐙
-    title: webgme-git Owns Rust State Code
-    details: Opening a state auto-fetches its .rs module from GitHub via Octokit. Cmd/Ctrl+S commits and pushes atomically with auto-rebase and 3-way merge conflict resolution.
-  - icon: ⚡
-    title: Sub-Millisecond Edit-Time Checks
-    details: Embedded Monaco validates globals.* fields, Event::* payloads, Outcome::Emit handling, and StateId::* topology against your live WebGME model on every keystroke.
-  - icon: 🦀
-    title: Dynamic Sim + Native Rust Parity
-    details: Step or auto-tick in the browser with live globals injection, then verify 100% behavioral parity by compiling and running the generated Cargo crate via rustc.
+  - icon: 📐
+    title: Visual Design, Version-Controlled
+    details: Model your states, transitions, guards, events, and shared data visually while storing the entire machine architecture in a central version-controlled database.
+  - icon: 🗂️
+    title: Hybrid Code Stored in Plain Git
+    details: Edit each state's Rust implementation inside the visual studio while the files themselves live in a regular Git repository that works seamlessly with any external IDE or CI pipeline.
+  - icon: 🔍
+    title: Continuous Edit & Impact Checks
+    details: Every line of code and transition guard is checked in real time against your design, and whenever a design change affects existing state code, Rusty flags every impacted piece immediately.
+  - icon: 📦
+    title: Standalone Rust Crates & Verification
+    details: Export clean, dependency-free Cargo crates where your design, transitions, and guards are compiled directly into Rust—verified interactively in the browser and against native cargo.
 ---
 
 ## See Rusty Studio in Action
 
-### Live Browser Simulation + Native `cargo` Parity
+### Clean Fixed Layout, Interactive Transitions & Native Verification
 
-Switch between seeded state machines, step physics & payload events in the browser with glowing SVG state highlights, and verify 100% behavioral parity against compiled Rust (`rustc` / `cargo`):
+Browse states, shared data, and color-coded events in collapsible explorer panels, inspect guarded transitions via hover tooltips, and confirm browser runs match compiled native Rust:
 
-![SmartThermostat physics simulation and native Rust parity](/images/demo-smart-thermostat.gif)
+![SmartThermostat showcase in fixed layered layout with native parity](/images/demo-smart-thermostat.gif)
 
-### Sub-Millisecond Monaco Edit-Time Checks + `rustc` Verification
+### Design-Change Impact Tracking & Edit-Time Checks
 
-As you type Rust state handlers, `RustyAnalyzer` validates globals, payload events, and WebGME transition topology in `< 1 ms`, then overlays full `cargo check` diagnostics on demand:
+Rename or retype a shared variable and immediately see every state and guard affected by the design change—then get sub-millisecond Monaco feedback and full compiler verification as you update your Rust code:
 
-![Monaco edit-time checks and rustc verification](/images/demo-monaco-edit-checks.gif)
+![Design impact tracking, Monaco edit-time checks, and rustc verification](/images/demo-monaco-edit-checks.gif)

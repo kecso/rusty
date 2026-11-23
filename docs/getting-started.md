@@ -38,23 +38,20 @@ The server starts WebGME and mounts three routers:
 
 On first launch in guest/dev mode, Rusty Studio automatically creates a WebGME project called **`RustyDemo`** seeded from `seed/RustySeed.webgmex`.
 
-::: tip Two Ready-to-Run Tutorial Models
-`RustySeed.webgmex` contains two complete `StateMachine` models inside `ROOT`:
-1. **`BlinkyController`** — a 4-state hardware blink + thermal fault controller ([Tutorial 1](./tutorial/01-blinky-quickstart.md)).
-2. **`SmartThermostat`** — a 5-state physics-computing HVAC controller with floating-point math, payload events, and self-emitted safety alerts ([Tutorial 2](./tutorial/02-smart-thermostat.md)).
-
-Use the **Machine** selector in the top bar of Rusty Studio to switch between them at any time.
+::: tip Counter Tutorial + Pre-Seeded Demo Showcases
+- **Build from scratch**: Follow [Tutorial 1: Build a Simple Counter](./tutorial/00-build-a-counter.md) to sign in via GitHub, bind your fork directory, design states/globals/events/guards, and export a standalone crate.
+- **Pre-seeded demos in `RustySeed.webgmex`**: Use the **Machine** dropdown to tour **`BlinkyController`** ([Blinky Showcase](./tutorial/01-blinky-quickstart.md)) and **`SmartThermostat`** ([SmartThermostat Showcase](./tutorial/02-smart-thermostat.md)).
 :::
 
 ## 2. Binding Your Fork's `dev` Branch for GitHub Testing
 
-Both tutorial models in `RustySeed.webgmex` pre-configure `GitArtifactLink` with:
+Both pre-seeded machines configure `GitArtifactLink` at the **`StateMachine` directory level**:
 
 - `gitOwner`: *(left blank so you bind your own GitHub username)*
 - `gitRepo`: `rusty`
 - `gitBranch`: **`dev`**
-- `gitPath`: `examples/blinky/src/states/<state>.rs` or `examples/smart-thermostat/src/states/<state>.rs`
+- `gitPath`: `examples/blinky` or `examples/smart-thermostat` *(states resolve cleanly to `<dir>/src/states/<state>.rs`, with optional per-state overrides)*
 
-Until you bind an owner, Studio works cleanly in **Local Draft Mode** (you can edit, simulate, and run `rustc` without signing into GitHub). When you are ready to test real Octokit commits, click **Bind GitHub Repo…** in Studio's `GitArtifactLink` bar to fill in **`<your-username>/rusty`** on **`dev`** — you will push to your own fork without needing write access to `kecso/rusty`.
+Until you bind an owner, Studio works cleanly in **Local Draft Mode**. When ready to push real commits, click **Bind GitHub Repo…** to fill in **`<your-username>/rusty`** on **`dev`**, or click **↓ Import from GitHub…** to rebuild a WebGME machine directly from any GitHub Rust crate directory.
 
-See [Tutorial 4: Testing GitHub Sync on Your Fork's `dev` Branch](./tutorial/04-github-sync-dev.md) for setting up `.env` and GitHub App OAuth.
+See [Tutorial 3: GitHub Sync & Directory Import](./tutorial/04-github-sync-dev.md) for setting up `.env` and GitHub App OAuth.

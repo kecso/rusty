@@ -26,13 +26,16 @@ define([
 
     // Load codegen (Node.js server-side)
     let codegen;
+    let contract;
     try {
       codegen = require("../../common/rustCodegen");
+      contract = require("../../common/rustContract");
     } catch (_err) {
       codegen = typeof globalThis !== "undefined" ? globalThis.RustyCodegen : null;
+      contract = typeof globalThis !== "undefined" ? globalThis.RustyContract : null;
     }
 
-    if (!codegen) {
+    if (!codegen || !contract) {
       callback(new Error("RustyCodegen module not available"), self.result);
       return;
     }
@@ -45,6 +48,10 @@ define([
           crateName: core.getAttribute(activeNode, "crateName") || "rusty_machine",
           description: core.getAttribute(activeNode, "description") || "",
           tickMs: core.getAttribute(activeNode, "tickMs") || 800,
+          gitOwner: core.getAttribute(activeNode, "gitOwner") || "",
+          gitRepo: core.getAttribute(activeNode, "gitRepo") || "",
+          gitBranch: core.getAttribute(activeNode, "gitBranch") || "main",
+          gitPath: core.getAttribute(activeNode, "gitPath") || "src/states",
           states: [],
           transitions: [],
           globals: [],
@@ -62,7 +69,7 @@ define([
           if (metaName === "State") {
             const name = core.getAttribute(child, "name");
             stateNameByPath.set(childPath, name);
-            model.states.push({
+            const rawState = {
               id: childPath,
               name,
               description: core.getAttribute(child, "description") || "",
@@ -71,9 +78,17 @@ define([
               code: core.getAttribute(child, "codeCache") || "",
               gitOwner: core.getAttribute(child, "gitOwner") || "",
               gitRepo: core.getAttribute(child, "gitRepo") || "",
-              gitBranch: core.getAttribute(child, "gitBranch") || "main",
+              gitBranch: core.getAttribute(child, "gitBranch") || "",
               gitPath: core.getAttribute(child, "gitPath") || "",
               gitBaseCommitSha: core.getAttribute(child, "gitBaseCommitSha") || "",
+            };
+            const effective = contract.resolveStateGitLink(model, rawState);
+            model.states.push({
+              ...rawState,
+              gitOwner: effective.gitOwner,
+              gitRepo: effective.gitRepo,
+              gitBranch: effective.gitBranch,
+              gitPath: effective.gitPath,
             });
           } else if (metaName === "GlobalVar") {
             model.globals.push({

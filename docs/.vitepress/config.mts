@@ -1,20 +1,24 @@
 import { defineConfig } from "vitepress";
 
+const base = process.env.DOCS_BASE || "/";
+
 export default defineConfig({
   title: "Rusty Studio",
   description:
-    "WebGME + webgme-git Rust State Machine Modeling, Edit-Time Analysis, and Dynamic Simulation Studio",
-  base: process.env.DOCS_BASE || "/",
+    "Visual state machine design with Git-backed Rust state code, continuous edit-time checks, design-impact tracking, and standalone Cargo crates.",
+  base,
   cleanUrls: false,
+  head: [["link", { rel: "icon", type: "image/svg+xml", href: `${base}favicon.svg` }]],
   themeConfig: {
-    siteTitle: "🦀 Rusty Studio",
+    siteTitle: "Rusty Studio",
+    logo: "/logo.svg",
     search: {
       provider: "local",
     },
     nav: [
       { text: "Getting Started", link: "/getting-started" },
-      { text: "Tutorials", link: "/tutorial/01-blinky-quickstart" },
-      { text: "SmartThermostat", link: "/tutorial/02-smart-thermostat" },
+      { text: "Counter Tutorial", link: "/tutorial/00-build-a-counter" },
+      { text: "Demo Showcases", link: "/tutorial/02-smart-thermostat" },
       { text: "Reference", link: "/reference/metamodel" },
       { text: "GitHub", link: "https://github.com/kecso/rusty" },
     ],
@@ -28,34 +32,33 @@ export default defineConfig({
         ],
       },
       {
-        text: "Core Concepts",
+        text: "Step-by-Step Tutorial",
+        items: [
+          { text: "1. Build a Simple Counter", link: "/tutorial/00-build-a-counter" },
+          { text: "2. Edit-Time & Impact Checks", link: "/tutorial/03-edit-time-checks" },
+          { text: "3. GitHub Sync & Import", link: "/tutorial/04-github-sync-dev" },
+          { text: "4. Standalone Rust Crates", link: "/tutorial/05-codegen-and-native" },
+        ],
+      },
+      {
+        text: "Demo Showcases",
+        items: [
+          { text: "BlinkyController Showcase", link: "/tutorial/01-blinky-quickstart" },
+          { text: "SmartThermostat Showcase", link: "/tutorial/02-smart-thermostat" },
+        ],
+      },
+      {
+        text: "Concepts & Reference",
         items: [
           { text: "WebGME + Git Architecture", link: "/concepts/architecture" },
           { text: "Rust State Contract", link: "/concepts/state-contract" },
-          { text: "webgme-git & dev Branch Sync", link: "/concepts/git-workflow" },
-        ],
-      },
-      {
-        text: "Step-by-Step Tutorials",
-        items: [
-          { text: "1. Blinky Quickstart", link: "/tutorial/01-blinky-quickstart" },
-          { text: "2. SmartThermostat (Full Showcase)", link: "/tutorial/02-smart-thermostat" },
-          { text: "3. Edit-Time Checks in Monaco", link: "/tutorial/03-edit-time-checks" },
-          { text: "4. Testing GitHub Sync on dev", link: "/tutorial/04-github-sync-dev" },
-          { text: "5. Codegen & Native Cargo Run", link: "/tutorial/05-codegen-and-native" },
-        ],
-      },
-      {
-        text: "Reference",
-        items: [
+          { text: "Fork & Dev Branch Sync", link: "/concepts/git-workflow" },
           { text: "WebGME Metamodel", link: "/reference/metamodel" },
-          { text: "Edit-Time Diagnostics", link: "/reference/diagnostics" },
+          { text: "Edit-Time & Impact Diagnostics", link: "/reference/diagnostics" },
         ],
       },
     ],
-    socialLinks: [
-      { icon: "github", link: "https://github.com/kecso/rusty" },
-    ],
+    socialLinks: [{ icon: "github", link: "https://github.com/kecso/rusty" }],
     footer: {
       message: "Built on WebGME & webgme-git · MIT License",
       copyright: "Rusty State Machine Studio",

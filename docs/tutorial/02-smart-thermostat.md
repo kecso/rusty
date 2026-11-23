@@ -1,8 +1,12 @@
-# Tutorial 2: SmartThermostat (Full Showcase)
+# Demo Showcase: SmartThermostat (Full Reference)
 
-**`SmartThermostat`** (`examples/smart-thermostat/`) is Rusty's comprehensive tutorial model. It is easy to follow — a room HVAC thermostat — while exercising every major feature of WebGME, Monaco edit-time checks, `webgme-git`, codegen, and dynamic simulation.
+**`SmartThermostat`** (`examples/smart-thermostat/`) is a complete pre-built demo model showcasing floating-point physics, payload events, guarded transitions, self-emitted alerts, and native Rust parity.
 
-![SmartThermostat physics simulation and native Rust parity](/images/demo-smart-thermostat.gif)
+![SmartThermostat showcase in fixed layered layout with native parity](/images/demo-smart-thermostat.gif)
+
+::: tip Want to build your own machine step by step?
+Start with [Tutorial 1: Build a Simple Counter](./00-build-a-counter.md) to walk through creating states, globals, events, and guards from scratch.
+:::
 
 ## What `SmartThermostat` Demonstrates
 
@@ -37,8 +41,8 @@
 ## Step 1: Switch to `SmartThermostat`
 
 1. In Rusty Studio's top bar, change the **Machine** dropdown from `BlinkyController` to **`SmartThermostat`**.
-2. Notice the **GitArtifactLink** bar shows `rusty@dev` (`examples/smart-thermostat/src/states`), ready for you to bind `<your-username>` via **Bind GitHub Repo…** when testing GitHub sync.
-3. Switch the right pane to **Dynamic Simulator**. Initial state is **`Standby`** with:
+2. Notice the **Git Repository** bar updates to `dir: examples/smart-thermostat` (states inherit `<dir>/src/states/<state>.rs`), ready for you to bind `<your-username>/rusty@dev` via **Bind GitHub Repo…**.
+3. Hover any transition badge (`B ⚑`, `F`, `G`) on the **Diagram** to inspect its full Event + `[Guard]` tooltip, then switch the right pane to **Simulator**. Initial state is **`Standby`** with:
    - `current_temp_c = 21`
    - `target_temp_c = 22`
    - `hysteresis_c = 1`
@@ -79,7 +83,7 @@ if globals.current_temp_c >= 40.0 || globals.cycle_ticks >= globals.max_cycle_ti
 
 1. Click **`SetAmbient(f64)`** → `36`, then **`SetTarget(f64)`** → `20`, and click **`▶ Auto-Tick`** to watch `Standby` drift upward and enter **`Cooling`**.
 2. Click **`EmergencyShutoff`** at any time to verify immediate transition to **`SafeLockout`** (`fault_code = 999`, `status_note = "LOCKED OUT - Reset required"`), then click **`Reset`**.
-3. Click **`🦀 Verify in Native Rust`** — `/routers/rustsim/run` compiles `SmartThermostat` with `cargo` and confirms the native Rust binary produces the exact same final state and floating-point values!
+3. Click **`⚙ Verify in Native Rust`** — `/routers/rustsim/run` compiles `SmartThermostat` with `cargo` and confirms the native Rust binary produces the exact same final state and floating-point values!
 
 ## Step 6: Modify Computation Live in Monaco
 
@@ -88,4 +92,4 @@ if globals.current_temp_c >= 40.0 || globals.cycle_ticks >= globals.max_cycle_ti
    ```rust
    let watts = if globals.eco_mode { 15.0 } else { 30.0 };
    ```
-3. Click **Save Draft to WebGME** (or press **`⌘S`** to commit & push to your fork's `dev` branch after binding `<your-username>/rusty` in [Tutorial 4](./04-github-sync-dev.md)), then click **✓ Verify with rustc** and re-run the **Dynamic Simulator** to see `energy_wh` increase by `30 Wh` per tick!
+3. Click **Save Draft to WebGME** (or press **`⌘S`** to commit & push to your fork's `dev` branch after binding `<your-username>/rusty` in [Tutorial 3](./04-github-sync-dev.md)), then click **✓ Verify with rustc** and re-run the **Simulator** to see `energy_wh` increase by `30 Wh` per tick!

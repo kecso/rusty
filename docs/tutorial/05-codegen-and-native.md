@@ -1,44 +1,47 @@
-# Tutorial 5: Codegen & Running Natively with Cargo
+# Tutorial 4: Standalone Rust Crates & How Design Maps to Code
 
-Everything you model in WebGME and edit in Monaco compiles into a standalone, zero-dependency Rust crate (`Cargo.toml`, `src/lib.rs`, `src/main.rs`, `src/types.rs`, `src/machine.rs`, `src/states/*.rs`).
+**Generated machines are 100% standalone.** Every Rusty machine compiles into a standard, zero-dependency Cargo crate (`Cargo.toml`, `src/lib.rs`, `src/main.rs`, `src/types.rs`, `src/machine.rs`, and `src/states/*.rs`) that runs completely outside Rusty Studio and WebGME.
 
-![Generated Rust crate preview and Bind GitHub Repo modal](/images/demo-generated-crate.gif)
+![Generated crate preview, Bind Machine Directory modal, and Import from GitHub modal](/images/demo-generated-crate.gif)
 
-## 1. Inspect the Generated Crate in Studio
+## 1. How Your Visual Design Is Represented in Generated Rust
 
-In Rusty Studio's center pane, click the **Generated Rust Crate** tab to browse every generated file live as you edit your WebGME model:
+Rusty keeps visual structure and hand-authored behavior cleanly separated across generated vs. Git-synced files:
 
-- `Cargo.toml` — package metadata & `[[bin]]` target
-- `src/types.rs` — `StateId` enum, `Event` enum (with `Event::parse(&str)` CLI parser), `Outcome` enum (`Stay`, `Transition(StateId)`, `Emit(Event)`), and `Globals` struct (with `Default` and `to_json()`)
-- `src/states/mod.rs` — module declarations for all `State` nodes
-- `src/states/<state>.rs` — individual state behavior modules (synchronized with GitHub via `webgme-git`)
-- `src/machine.rs` — deterministic `StateMachine::dispatch(&mut self, event: &Event)` loop (handles `Outcome::Emit` chaining up to depth 8, `on_exit`/`on_enter` lifecycle hooks, and fallback WebGME transition guards)
-- `src/lib.rs` — library crate root + unit test
-- `src/main.rs` — JSON-lines CLI trace runner
+| File in Crate | Origin | What It Contains |
+| --- | --- | --- |
+| `Cargo.toml` | **Generated** from WebGME `StateMachine` | Package name (`crateName`), description, `[lib]` and `[[bin]]` targets — zero external crate dependencies |
+| `src/types.rs` | **Generated** from WebGME nodes | **`StateId` enum** (all States), **`Event` enum + `Event::parse(&str)`** (all EventDefs + payload types), **`Outcome` enum**, and **`Globals` struct** (all GlobalVars + `Default` values) |
+| `src/machine.rs` | **Generated** from WebGME topology | **`StateMachine` struct & `dispatch(&mut self, event)` engine**: calls state hooks (`on_exit` → transition → `on_enter`), chains `Outcome::Emit` events up to depth 8, and encodes every **WebGME `Transition` & `guard` expression** inside **`evaluate_model_transitions(&self, event)`** |
+| `src/states/*.rs` | **Git-Backed** (`src/states/<state>.rs`) | Per-state `on_enter`, `on_event`, and `on_exit` behavior edited in Monaco or any external Rust IDE |
+| `src/lib.rs` & `src/main.rs` | **Generated** | Crate root, unit smoke test, and JSON-lines CLI runner (`cargo run -- Start Tick ...`) |
 
-## 2. Export from Stock WebGME (`GenerateRustCrate` Plugin)
+Notice how **two levels of transition logic** work together seamlessly in `src/machine.rs`:
+- State code in `src/states/<state>.rs` can explicitly return `Outcome::Transition(StateId::Next)`.
+- Or a state can handle data updates and return `Outcome::Stay`, letting generated `evaluate_model_transitions()` evaluate your WebGME **`Transition` + `guard` rules** (e.g. `if self.current == StateId::Standby && matches!(event, Event::Tick) && (globals.current_temp_c < globals.target_temp_c - globals.hysteresis_c) { return Some(StateId::Heating); }`).
 
-Because Rusty uses proper WebGME metamodeling:
+## 2. Inspect, Push, or Export Your Standalone Crate
 
-1. Click **WebGME UI ↗** in the Studio top bar to open your live project in WebGME.
-2. Navigate into a `StateMachine` node (`BlinkyController` or `SmartThermostat`).
-3. Run the **`Generate Rust Crate`** plugin from the WebGME plugin menu — it executes `src/plugins/GenerateRustCrate/GenerateRustCrate.js` via `core` and saves the entire crate as a downloadable WebGME Blob artifact.
+- **Live Crate Tab**: Click **Crate** in Rusty Studio's center pane to inspect every generated file live or click **Download JSON Bundle**.
+- **Commit Standalone Crate to Git**: Click **Push Full Crate** in the top bar to commit `Cargo.toml` + `src/**` directly under your machine's GitHub directory.
+- **Stock WebGME Export (`GenerateRustCrate`)**: Open **WebGME UI ↗**, navigate into any `StateMachine` node, and run **`Generate Rust Crate`** to export the standalone crate as a downloadable WebGME artifact.
+- **Import Back Anytime (`ImportFromGitHub`)**: Any crate pushed to GitHub can also be swept back into WebGME using **`↓ Import from GitHub…`** (or the `Import StateMachine from GitHub Directory` plugin).
 
-## 3. Run the Checked-In Example Crates Locally
+## 3. Running Generated Machines Independently with `cargo`
 
-Both tutorial models are materialized as ready-to-run Cargo crates under `examples/`:
+No WebGME server, MongoDB, or Node.js is needed to compile, test, embed, or run a generated crate:
 
 ```bash
-# Run unit tests on both example crates
+# Test both standalone example crates directly with Cargo
 (cd examples/blinky && cargo test)
 (cd examples/smart-thermostat && cargo test)
 
-# Execute SmartThermostat from the CLI with unit + f64 payload events
+# Run SmartThermostat as a standalone native CLI binary
 cd examples/smart-thermostat
 cargo run --quiet -- SetTarget:26.0 Tick Tick Tick ToggleEco Tick EmergencyShutoff Reset
 ```
 
-`main.rs` emits one JSON object per step:
+`main.rs` outputs one structured JSON trace line per dispatched event:
 
 ```json
 {"step":0,"event":"__init__","from":"Standby","to":"Standby","globals":{"current_temp_c":21,...}}
@@ -46,8 +49,4 @@ cargo run --quiet -- SetTarget:26.0 Tick Tick Tick ToggleEco Tick EmergencyShuto
 {"step":2,"event":"Tick","from":"Standby","to":"Heating","globals":{"current_temp_c":20.25,"target_temp_c":26,...}}
 ```
 
-If you modify `src/common/rustContract.js`, regenerate both checked-in crates with:
-
-```bash
-npm run sync:examples
-```
+If you edit starter models in `src/common/rustContract.js`, regenerate both checked-in example crates with `npm run sync:examples`.

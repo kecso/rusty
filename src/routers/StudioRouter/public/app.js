@@ -3,7 +3,14 @@
 
   const bridge = new window.WebGMEBridge();
   const gitClient = new window.GitSyncClient("/routers/gitrouter");
-  const { RustyContract, RustyCodegen, RustySimEngine } = window;
+  const {
+    RustyContract,
+    RustyCodegen,
+    RustySimEngine,
+    RustyAnalyzer,
+    RustyImporter,
+    StateMachineCanvas,
+  } = window;
 
   const state = {
     info: null,
@@ -19,13 +26,22 @@
     fetchedStateIds: new Set(),
     editorLoadedStateId: null,
     activeCrateFile: "Cargo.toml",
+    // Layout & UI visibility
+    leftHidden: false,
+    rightHidden: false,
+    collapsedSections: new Set(),
+    layoutDirection: "LR",
+    compactLabels: true,
+    highlightEventName: null,
+    impact: null,
     // Simulator state
     sim: null,
     simTimer: null,
     simTickMs: 800,
     simLastTransitionId: null,
-    // Pending 409 conflict
+    // Active modals
     pendingConflict: null,
+    elementModalConfirm: null,
   };
 
   const $ = (id) => document.getElementById(id);
@@ -55,11 +71,101 @@
     return m.transitions.find((t) => t.id === state.selectedId) || null;
   }
 
-  const canvas = new window.StateMachineCanvas($("smSvg"), {
+  function openElementModal({ title, fields, confirmLabel = "Save", onConfirm }) {
+    $("elementModalTitle").textContent = title;
+    $("btnConfirmElementModal").textContent = confirmLabel;
+    const body = $("elementModalBody");
+    body.innerHTML = "";
+
+    for (const f of fields) {
+      const wrap = document.createElement("label");
+      wrap.className = "form-row";
+      const span = document.createElement("span");
+      span.textContent = f.label;
+      wrap.appendChild(span);
+
+      let input;
+      if (f.type === "select") {
+        input = document.createElement("select");
+        for (const optVal of f.options || []) {
+          const opt = document.createElement("option");
+          opt.value = optVal;
+          opt.textContent = optVal || "(none — unit event)";
+          if (optVal === (f.value ?? "")) opt.selected = true;
+          input.appendChild(opt);
+        }
+      } else {
+        input = document.createElement("input");
+        input.type = f.type || "text";
+        input.value = f.value ?? "";
+        if (f.placeholder) input.placeholder = f.placeholder;
+      }
+      input.id = `em_${f.name}`;
+      wrap.appendChild(input);
+      body.appendChild(wrap);
+    }
+
+    state.elementModalConfirm = () => {
+      const values = {};
+      for (const f of fields) {
+        values[f.name] = $(`em_${f.name}`).value;
+      }
+      if (onConfirm(values) !== false) {
+        $("elementModal").classList.add("hidden");
+        state.elementModalConfirm = null;
+      }
+    };
+
+    $("elementModal").classList.remove("hidden");
+    const firstInput = body.querySelector("input, select");
+    if (firstInput) firstInput.focus();
+  }
+
+  function updateCanvasTooltip(tr, evStyle, impactItem, mouseEvent) {
+    const tip = $("canvasTooltip");
+    if (!tr || !mouseEvent) {
+      tip.classList.add("hidden");
+      return;
+    }
+
+    const payload = evStyle && evStyle.payloadType ? `(${evStyle.payloadType})` : "";
+    const guardHtml =
+      tr.guard && tr.guard.trim()
+        ? `<div class="tt-guard">[${escapeHtml(tr.guard.trim())}]</div>`
+        : `<div class="muted" style="font-size:10.5px;">Unconditional (no guard)</div>`;
+    const actionHtml =
+      tr.action && tr.action.trim()
+        ? `<div class="muted-mono" style="margin-top:3px;">action: ${escapeHtml(tr.action.trim())}</div>`
+        : "";
+    const impactHtml = impactItem
+      ? `<div class="tt-impact">⚠ ${escapeHtml(impactItem.reasons.map((r) => r.message).join("; "))}</div>`
+      : "";
+
+    tip.innerHTML = `
+      <div class="tt-title">[${escapeHtml(evStyle ? evStyle.glyph : "?")}] ${escapeHtml(tr.event)}${escapeHtml(payload)}</div>
+      <div class="tt-route">${escapeHtml(tr.srcName)} → ${escapeHtml(tr.dstName)} (priority ${Number(tr.priority ?? 1)})</div>
+      ${guardHtml}
+      ${actionHtml}
+      ${impactHtml}
+    `;
+    tip.classList.remove("hidden");
+
+    const hostRect = $("canvasHost").getBoundingClientRect();
+    const relX = mouseEvent.clientX - hostRect.left + 14;
+    const relY = mouseEvent.clientY - hostRect.top + 14;
+    const maxX = Math.max(10, hostRect.width - tip.offsetWidth - 12);
+    const maxY = Math.max(10, hostRect.height - tip.offsetHeight - 12);
+    tip.style.left = `${Math.min(relX, maxX)}px`;
+    tip.style.top = `${Math.min(relY, maxY)}px`;
+  }
+
+  const canvas = new StateMachineCanvas($("smSvg"), {
     onSelectState(id) {
+      if (state.rightHidden) togglePane("right", false);
       selectStateForEditing(id);
     },
     onSelectTransition(id) {
+      if (state.rightHidden) togglePane("right", false);
       state.selectedType = "transition";
       state.selectedId = id;
       renderAll();
@@ -68,33 +174,61 @@
       state.selectedType = null;
       state.selectedId = null;
       state.connectSourceId = null;
+      updateCanvasTooltip(null);
       renderAll();
     },
-    onStateMoved(id, pos) {
-      bridge.updateStatePositions({ [id]: pos });
-    },
+    onHoverTransition: updateCanvasTooltip,
     onConnectClick(stateId) {
       const m = activeMachine();
       if (!m) return;
       if (!state.connectSourceId) {
         state.connectSourceId = stateId;
-        toast("Select target state for transition", "ok");
+        toast("Select destination state for transition", "ok");
         renderCanvas();
         return;
       }
-      const eventName = window.prompt("Trigger event name (e.g. Tick, Start, Stop):", "Tick");
-      if (eventName && eventName.trim()) {
-        bridge.createTransition(m.id, {
-          srcId: state.connectSourceId,
-          dstId: stateId,
-          event: eventName.trim(),
-        });
-        toast(`Created transition on ${eventName.trim()}`, "ok");
-      }
+      const srcId = state.connectSourceId;
       state.connectSourceId = null;
       state.connectMode = false;
       $("btnConnectMode").classList.remove("btn-active");
-      renderAll();
+
+      const evOptions = m.events.map((e) => e.name);
+      openElementModal({
+        title: "Create Transition",
+        confirmLabel: "Create Transition",
+        fields: [
+          {
+            name: "event",
+            label: "Trigger Event",
+            type: evOptions.length ? "select" : "text",
+            options: evOptions,
+            value: evOptions[0] || "Tick",
+          },
+          { name: "guard", label: "Guard Expression (optional)", placeholder: "e.g. globals.count >= 5", value: "" },
+          { name: "priority", label: "Priority", type: "number", value: "1" },
+        ],
+        onConfirm(vals) {
+          const eventName = (vals.event || "").trim() || "Tick";
+          const guard = (vals.guard || "").trim();
+          const deps = RustyAnalyzer.extractDependencies(guard, m, { triggerEvent: eventName });
+          const tid = bridge.createTransition(m.id, {
+            srcId,
+            dstId: stateId,
+            event: eventName,
+            guard,
+            priority: Number(vals.priority || 1),
+          });
+          bridge.syncNodeDependencies(
+            tid,
+            deps.memberIds,
+            RustyAnalyzer.serializeDepsSnapshot(deps.snapshot),
+            `Set dependsOn for transition ${eventName}`,
+          );
+          toast(`Created transition on ${eventName}`, "ok");
+          state.selectedType = "transition";
+          state.selectedId = tid;
+        },
+      });
     },
   });
 
@@ -103,13 +237,15 @@
     state.selectedId = id;
     renderAll();
 
-    // Auto-fetch latest Rust file from GitHub via webgme-git (Octokit) when editing a bound state
+    // Auto-fetch latest Rust file from GitHub via webgme-git when editing a bound state
+    const m = activeMachine();
     const st = selectedStateObj();
+    if (!m || !st) return;
+    const eff = RustyContract.resolveStateGitLink(m, st);
     if (
-      st &&
-      st.gitOwner &&
-      st.gitRepo &&
-      st.gitPath &&
+      eff.gitOwner &&
+      eff.gitRepo &&
+      eff.gitPath &&
       state.gitStatus.hasGithubToken &&
       !state.dirtyStateIds.has(st.id) &&
       !state.fetchedStateIds.has(st.id)
@@ -154,12 +290,39 @@
     }
   }
 
+  function renderGuardDiagnostics(tr) {
+    const m = activeMachine();
+    const list = $("transGuardDiag");
+    list.innerHTML = "";
+    if (!m || !tr) {
+      list.classList.add("hidden");
+      return;
+    }
+    const guardVal = $("inpTransGuard").value;
+    const evVal = $("inpTransEvent").value;
+    const res = RustyAnalyzer.analyzeGuardExpression(guardVal, m, { ...tr, event: evVal });
+    if (!res.diagnostics.length) {
+      list.classList.add("hidden");
+      return;
+    }
+    list.classList.remove("hidden");
+    for (const d of res.diagnostics) {
+      const li = document.createElement("li");
+      li.className = `problem-row sev-${d.severity}`;
+      li.innerHTML = `
+        <span class="problem-loc">${escapeHtml(d.code)}</span>
+        <span class="problem-msg">${escapeHtml(d.message)}</span>
+      `;
+      list.appendChild(li);
+    }
+  }
+
   async function saveOrCommitActiveState() {
+    const m = activeMachine();
     const st = selectedStateObj();
-    if (!st || !monacoEditor) return;
+    if (!m || !st || !monacoEditor) return;
     const code = monacoEditor.getValue();
 
-    // Instant edit-time check before committing
     const check = monacoEditor.runInstantAnalysis();
     if (check && check.stats.errors > 0) {
       const proceed = window.confirm(
@@ -168,22 +331,58 @@
       if (!proceed) return;
     }
 
-    bridge.updateNodeAttributes(st.id, { codeCache: code }, `Save Rust code for ${st.name}`);
+    const deps = RustyAnalyzer.extractDependencies(code, m);
+    bridge.updateStateCodeAndDeps(
+      st.id,
+      code,
+      deps.memberIds,
+      RustyAnalyzer.serializeDepsSnapshot(deps.snapshot),
+      `Save Rust code & dependsOn for ${st.name}`,
+    );
 
-    if (st.gitOwner && st.gitRepo && state.gitStatus.hasGithubToken) {
+    const eff = RustyContract.resolveStateGitLink(m, st);
+    if (eff.gitOwner && eff.gitRepo && state.gitStatus.hasGithubToken) {
       await commitStatesToGitHub([{ ...st, code }]);
     } else {
       state.dirtyStateIds.delete(st.id);
       $("codeDirtyHint").textContent = "Saved to WebGME";
-      toast(`Saved ${st.name} to WebGME (bind GitHub repo to Commit & Push)`, "ok");
+      toast(`Saved ${st.name} to WebGME`, "ok");
       renderAll();
     }
+  }
+
+  // ---- Pane Visibility & Collapsibles ----
+
+  function togglePane(side, forceHidden) {
+    if (side === "left") {
+      state.leftHidden = typeof forceHidden === "boolean" ? forceHidden : !state.leftHidden;
+      $("workspaceGrid").classList.toggle("left-hidden", state.leftHidden);
+      $("btnToggleLeftPane").classList.toggle("is-collapsed", state.leftHidden);
+      $("btnToggleLeftPane").title = state.leftHidden ? "Show left Explorer panel" : "Hide left Explorer panel";
+    } else {
+      state.rightHidden = typeof forceHidden === "boolean" ? forceHidden : !state.rightHidden;
+      $("workspaceGrid").classList.toggle("right-hidden", state.rightHidden);
+      $("btnToggleRightPane").classList.toggle("is-collapsed", state.rightHidden);
+      $("btnToggleRightPane").title = state.rightHidden ? "Show right Inspector panel" : "Hide right Inspector panel";
+    }
+    if (monacoEditor) setTimeout(() => monacoEditor.layout(), 180);
+  }
+
+  function applySectionCollapseStates() {
+    document.querySelectorAll("[data-section-name]").forEach((sec) => {
+      const key = sec.dataset.sectionName;
+      const collapsed = state.collapsedSections.has(key);
+      sec.classList.toggle("collapsed", collapsed);
+      const toggleBtn = sec.querySelector("[data-collapse-section]");
+      if (toggleBtn) toggleBtn.setAttribute("aria-expanded", String(!collapsed));
+    });
   }
 
   // ---- Initialization ----
 
   async function init() {
     bindUIEvents();
+    applySectionCollapseStates();
 
     monacoEditor = new window.MonacoStateEditor($("monacoEditorHost"), {
       onChange() {
@@ -201,7 +400,6 @@
       },
     });
 
-    // Load studio info + rustc health + gitrouter status in parallel
     try {
       const infoRes = await fetch("/routers/studio/api/info", { credentials: "same-origin" });
       state.info = await infoRes.json();
@@ -221,7 +419,7 @@
       return;
     }
 
-    // Initialize Monaco AMD loader after WebGME Socket.IO connects so window.define does not intercept socket.io.js
+    // Load Monaco AMD after WebGME Socket.IO connects
     monacoEditor.init();
 
     bridge.onModelChange((machines) => {
@@ -279,7 +477,6 @@
     renderProjectSelect();
 
     if (projects.length === 0) {
-      // Auto-create starter RustyDemo project from RustySeed on first run!
       try {
         toast("Creating starter project 'RustyDemo' from RustySeed…", "ok");
         const created = await bridge.createProjectFromSeed("RustyDemo", state.info.defaultSeed || "RustySeed");
@@ -326,8 +523,11 @@
   }
 
   function renderAll() {
+    const m = activeMachine();
+    state.impact = m ? RustyAnalyzer.computeDesignImpact(m) : null;
     renderMachineSelect();
     renderGitBar();
+    renderImpactBanner();
     renderSidebar();
     renderCanvas();
     renderInspector();
@@ -350,9 +550,41 @@
   function renderGitBar() {
     const m = activeMachine();
     if (!m || !m.gitOwner || !m.gitRepo) {
-      $("machineRepoDisplay").textContent = "Unbound (local draft)";
+      const dir = m && m.gitPath ? ` · dir: ${m.gitPath}` : "";
+      $("machineRepoDisplay").textContent = `Unbound (local draft${dir})`;
     } else {
-      $("machineRepoDisplay").textContent = `${m.gitOwner}/${m.gitRepo}@${m.gitBranch || "main"}`;
+      $("machineRepoDisplay").textContent = `${m.gitOwner}/${m.gitRepo}@${m.gitBranch || "main"} · ${m.gitPath || "src/states"}`;
+    }
+  }
+
+  function renderImpactBanner() {
+    const banner = $("impactBanner");
+    const imp = state.impact;
+    if (!imp || imp.totalImpacted === 0) {
+      banner.classList.add("hidden");
+      banner.innerHTML = "";
+      return;
+    }
+
+    banner.classList.remove("hidden");
+    banner.innerHTML = `<strong>⚠ Design Impact:</strong> ${imp.totalImpacted} item(s) need review / recheck: `;
+    for (const item of imp.items.slice(0, 6)) {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = `impact-chip${item.errors > 0 ? " err" : ""}`;
+      chip.textContent = `${item.kind === "state" ? item.name : `[Guard] ${item.name}`} (${item.errors + item.warnings})`;
+      chip.title = item.reasons.map((r) => r.message).join("\n");
+      chip.addEventListener("click", () => {
+        if (state.rightHidden) togglePane("right", false);
+        if (item.kind === "state") {
+          selectStateForEditing(item.id);
+        } else {
+          state.selectedType = "transition";
+          state.selectedId = item.id;
+          renderAll();
+        }
+      });
+      banner.appendChild(chip);
     }
   }
 
@@ -364,8 +596,15 @@
     stateList.innerHTML = "";
     globalList.innerHTML = "";
     eventList.innerHTML = "";
+
+    $("countStates").textContent = m ? String(m.states.length) : "0";
+    $("countGlobals").textContent = m ? String(m.globals.length) : "0";
+    $("countEvents").textContent = m ? String(m.events.length) : "0";
     if (!m) return;
 
+    const imp = state.impact;
+
+    // States
     for (const st of m.states) {
       const li = document.createElement("li");
       const isSel = state.selectedType === "state" && state.selectedId === st.id;
@@ -375,11 +614,17 @@
         : st.gitBaseCommitSha
           ? "dot-synced"
           : "dot-local";
+      const stImpact = imp && imp.byStateId[st.id];
+      const impactBadge = stImpact
+        ? `<span class="impact-dot${stImpact.errors > 0 ? " err" : ""}" title="${escapeHtml(stImpact.reasons.map((r) => r.message).join("; "))}">⚠${stImpact.errors + stImpact.warnings}</span>`
+        : "";
+
       li.innerHTML = `
         <div class="item-main">
           <span class="dot ${dotCls}" title="${dotCls.replace("dot-", "")}"></span>
           <span class="item-name">${escapeHtml(st.name)}</span>
         </div>
+        ${impactBadge}
         <span class="item-sub">${st.isInitial ? "INIT" : ""}</span>
       `;
       li.addEventListener("click", () => {
@@ -388,6 +633,7 @@
       stateList.appendChild(li);
     }
 
+    // Globals (click edit icon to rename/retype -> tests design impact cleanly)
     for (const g of m.globals) {
       const li = document.createElement("li");
       li.className = "item-row";
@@ -396,15 +642,48 @@
           <span class="item-name">${escapeHtml(g.name)}</span>
           <span class="item-sub">${escapeHtml(g.rustType)} = ${escapeHtml(g.initialValue)}</span>
         </div>
-        <button class="btn btn-xs" title="Delete GlobalVar">✕</button>
+        <button class="btn btn-xs btn-edit-global" title="Edit GlobalVar">✎</button>
+        <button class="btn btn-xs btn-del-global" title="Delete GlobalVar">✕</button>
       `;
-      li.querySelector("button").addEventListener("click", (e) => {
+      li.querySelector(".btn-edit-global").addEventListener("click", (e) => {
+        e.stopPropagation();
+        openElementModal({
+          title: `Edit Global Variable (${g.name})`,
+          confirmLabel: "Apply to Design",
+          fields: [
+            { name: "name", label: "Field Name (snake_case)", value: g.name },
+            {
+              name: "rustType",
+              label: "Rust Type",
+              type: "select",
+              options: ["bool", "i32", "i64", "u32", "f64", "String"],
+              value: g.rustType,
+            },
+            { name: "initialValue", label: "Initial Value", value: g.initialValue },
+          ],
+          onConfirm(vals) {
+            bridge.updateNodeAttributes(
+              g.id,
+              {
+                name: vals.name.trim() || g.name,
+                rustType: vals.rustType,
+                initialValue: vals.initialValue.trim(),
+              },
+              `Update GlobalVar ${g.name}`,
+            );
+            toast(`Updated global ${vals.name.trim() || g.name}`, "ok");
+          },
+        });
+      });
+      li.querySelector(".btn-del-global").addEventListener("click", (e) => {
         e.stopPropagation();
         bridge.deleteNode(g.id, g.name);
       });
       globalList.appendChild(li);
     }
 
+    // Events (glyph + line swatch legend)
+    const evStyles = StateMachineCanvas.buildEventStyles(m.events);
     const suggestions = $("eventNameSuggestions");
     suggestions.innerHTML = "";
     for (const ev of m.events) {
@@ -412,16 +691,59 @@
       opt.value = ev.name;
       suggestions.appendChild(opt);
 
+      const styleInfo = evStyles.get(ev.name) || { glyph: "?", color: "#94a3b8", dash: "" };
       const li = document.createElement("li");
       li.className = "item-row";
+      li.title = `Diagram badge [${styleInfo.glyph}] · Hover to highlight connectors`;
       li.innerHTML = `
         <div class="item-main">
+          <span class="event-glyph-pill" style="color:${styleInfo.color}">${escapeHtml(styleInfo.glyph)}</span>
+          <svg class="event-swatch" width="24" height="10" aria-hidden="true">
+            <line x1="1" y1="5" x2="23" y2="5" stroke="${styleInfo.color}" stroke-width="2.2" ${styleInfo.dash ? `stroke-dasharray="${styleInfo.dash}"` : ""}/>
+          </svg>
           <span class="item-name">${escapeHtml(ev.name)}</span>
           <span class="item-sub">${ev.payloadType ? `(${escapeHtml(ev.payloadType)})` : ""}</span>
         </div>
-        <button class="btn btn-xs" title="Delete EventDef">✕</button>
+        <button class="btn btn-xs btn-edit-event" title="Edit EventDef">✎</button>
+        <button class="btn btn-xs btn-del-event" title="Delete EventDef">✕</button>
       `;
-      li.querySelector("button").addEventListener("click", (e) => {
+      li.addEventListener("mouseenter", () => {
+        state.highlightEventName = ev.name;
+        renderCanvas();
+      });
+      li.addEventListener("mouseleave", () => {
+        state.highlightEventName = null;
+        renderCanvas();
+      });
+      li.querySelector(".btn-edit-event").addEventListener("click", (e) => {
+        e.stopPropagation();
+        openElementModal({
+          title: `Edit Event (${ev.name})`,
+          confirmLabel: "Apply to Design",
+          fields: [
+            { name: "name", label: "Event Name (PascalCase)", value: ev.name },
+            {
+              name: "payloadType",
+              label: "Payload Type",
+              type: "select",
+              options: ["", "bool", "i32", "i64", "u32", "f64", "String"],
+              value: ev.payloadType || "",
+            },
+          ],
+          onConfirm(vals) {
+            bridge.updateNodeAttributes(
+              ev.id,
+              {
+                name: vals.name.trim() || ev.name,
+                payloadType: vals.payloadType,
+              },
+              `Update EventDef ${ev.name}`,
+            );
+            toast(`Updated event ${vals.name.trim() || ev.name}`, "ok");
+          },
+        });
+      });
+      li.querySelector(".btn-del-event").addEventListener("click", (e) => {
         e.stopPropagation();
         bridge.deleteNode(ev.id, ev.name);
       });
@@ -441,6 +763,10 @@
       simActiveStateName: snap ? snap.currentState : null,
       simLastTransitionId: state.simLastTransitionId,
       dirtyStateIds: state.dirtyStateIds,
+      layoutDirection: state.layoutDirection,
+      compactLabels: state.compactLabels,
+      highlightEventName: state.highlightEventName,
+      impact: state.impact,
     });
 
     if (snap && snap.currentState) {
@@ -451,37 +777,96 @@
     }
   }
 
+  function renderDependsOnChips(containerEl, memberIds, m) {
+    containerEl.innerHTML = "";
+    const ids = Array.isArray(memberIds) ? memberIds : [];
+    if (ids.length === 0) {
+      containerEl.innerHTML = `<span class="muted">No referenced design nodes tracked yet.</span>`;
+      return;
+    }
+    const gMap = new Map((m.globals || []).map((g) => [g.id, g]));
+    const eMap = new Map((m.events || []).map((e) => [e.id, e]));
+    const sMap = new Map((m.states || []).map((s) => [s.id, s]));
+
+    for (const id of ids) {
+      const chip = document.createElement("span");
+      if (gMap.has(id)) {
+        const g = gMap.get(id);
+        chip.className = "dep-chip dep-global";
+        chip.textContent = `var: ${g.name} (${g.rustType})`;
+      } else if (eMap.has(id)) {
+        const ev = eMap.get(id);
+        chip.className = "dep-chip dep-event";
+        chip.textContent = `ev: ${ev.name}${ev.payloadType ? `(${ev.payloadType})` : ""}`;
+      } else if (sMap.has(id)) {
+        const st = sMap.get(id);
+        chip.className = "dep-chip dep-state";
+        chip.textContent = `state: ${st.name}`;
+      } else {
+        chip.className = "dep-chip dep-stale";
+        chip.textContent = `missing: ${id}`;
+      }
+      containerEl.appendChild(chip);
+    }
+  }
+
+  function renderImpactBox(boxEl, impactItem) {
+    if (!impactItem || !impactItem.reasons.length) {
+      boxEl.classList.add("hidden");
+      boxEl.innerHTML = "";
+      return;
+    }
+    boxEl.className = `impact-box${impactItem.errors > 0 ? " err" : ""}`;
+    boxEl.innerHTML =
+      `<strong>⚠ Impacted by design / code check:</strong>` +
+      impactItem.reasons
+        .map((r) => `<div>• <code>${escapeHtml(r.code)}</code> ${escapeHtml(r.message)}</div>`)
+        .join("");
+  }
+
   function renderInspector() {
+    const m = activeMachine();
     const st = selectedStateObj();
     const tr = selectedTransitionObj();
+    const imp = state.impact;
 
     $("inspectorEmpty").classList.toggle("hidden", Boolean(st || tr));
     $("stateInspector").classList.toggle("hidden", !st);
     $("transitionInspector").classList.toggle("hidden", !tr);
 
-    if (st) {
+    if (st && m) {
+      const eff = RustyContract.resolveStateGitLink(m, st);
       $("statePathHint").textContent = st.id;
       $("inpStateName").value = st.name;
       $("inpStateColor").value = st.color || "#38bdf8";
       $("inpStateDesc").value = st.description || "";
       $("inpStateInitial").checked = Boolean(st.isInitial);
       $("inpStateFinal").checked = Boolean(st.isFinal);
+
+      $("stateGitEffective").textContent = eff.gitOwner && eff.gitRepo
+        ? `${eff.gitOwner}/${eff.gitRepo}@${eff.gitBranch}:${eff.gitPath}`
+        : eff.gitPath;
       $("inpGitOwner").value = st.gitOwner || "";
       $("inpGitRepo").value = st.gitRepo || "";
-      $("inpGitBranch").value = st.gitBranch || "main";
-      $("inpGitPath").value = st.gitPath || RustyContract.defaultStatePath(st.name);
+      $("inpGitBranch").value = st.gitBranch || "";
+      $("inpGitPath").value = st.gitPath || "";
+      $("stateGitOverrideDetails").open = Boolean(eff.isOverridden);
       $("stateShaDisplay").textContent = st.gitBaseCommitSha ? st.gitBaseCommitSha.slice(0, 12) : "none";
 
       if (state.dirtyStateIds.has(st.id)) {
         setBadge("stateSyncBadge", "Modified (unsynced)", "badge-warn");
       } else if (st.gitBaseCommitSha) {
         setBadge("stateSyncBadge", "Synced with GitHub", "badge-ok");
+      } else if (eff.isOverridden) {
+        setBadge("stateSyncBadge", "Custom Override", "badge-warn");
       } else {
-        setBadge("stateSyncBadge", "Local Draft", "badge-muted");
+        setBadge("stateSyncBadge", "Inherited Dir", "badge-muted");
       }
 
+      renderImpactBox($("stateImpactBox"), imp && imp.byStateId[st.id]);
+      renderDependsOnChips($("stateDependsOnList"), st.dependsOn, m);
+
       if (monacoEditor) {
-        const m = activeMachine();
         monacoEditor.setContext(m, st);
         if (state.editorLoadedStateId !== st.id || !state.dirtyStateIds.has(st.id)) {
           state.editorLoadedStateId = st.id;
@@ -492,13 +877,16 @@
       $("codeDirtyHint").textContent = state.dirtyStateIds.has(st.id) ? "Unsaved edits" : "";
     }
 
-    if (tr) {
+    if (tr && m) {
       $("transRouteHint").textContent = `${tr.srcName} → ${tr.dstName}`;
       $("inpTransName").value = tr.name;
       $("inpTransEvent").value = tr.event;
       $("inpTransPriority").value = tr.priority;
       $("inpTransGuard").value = tr.guard || "";
       $("inpTransAction").value = tr.action || "";
+      renderImpactBox($("transImpactBox"), imp && imp.byTransitionId[tr.id]);
+      renderDependsOnChips($("transDependsOnList"), tr.dependsOn, m);
+      renderGuardDiagnostics(tr);
     }
   }
 
@@ -547,7 +935,6 @@
       $("simSpeedRange").value = state.simTickMs;
       $("simSpeedLabel").textContent = `${state.simTickMs}ms`;
     } else {
-      // Rebuild with latest model & code while keeping fresh state
       state.sim = RustySimEngine.createSimulation(m);
     }
   }
@@ -560,7 +947,6 @@
     $("simStateBig").textContent = snap.currentState || "—";
     $("simStepCount").textContent = String(snap.stepCount);
 
-    // Event Injector buttons
     const btnHost = $("simEventButtons");
     btnHost.innerHTML = "";
     for (const ev of m.events) {
@@ -569,18 +955,31 @@
       btn.textContent = ev.payloadType ? `${ev.name}(${ev.payloadType})` : ev.name;
       btn.title = ev.description || `Dispatch Event::${ev.name}`;
       btn.addEventListener("click", () => {
-        let payload;
-        if (ev.payloadType) {
-          const raw = window.prompt(`Payload (${ev.payloadType}) for ${ev.name}:`, "0");
-          if (raw === null) return;
-          payload = ev.payloadType === "bool" ? raw === "true" : ev.payloadType === "String" ? raw : Number(raw);
+        if (!ev.payloadType) {
+          dispatchSimEvent(ev.name, undefined);
+          return;
         }
-        dispatchSimEvent(ev.name, payload);
+        openElementModal({
+          title: `Dispatch ${ev.name}(${ev.payloadType})`,
+          confirmLabel: "Dispatch Event",
+          fields: [
+            {
+              name: "payload",
+              label: `Payload (${ev.payloadType})`,
+              value: ev.payloadType === "bool" ? "true" : "0",
+            },
+          ],
+          onConfirm(vals) {
+            const raw = vals.payload;
+            const payload =
+              ev.payloadType === "bool" ? raw === "true" : ev.payloadType === "String" ? raw : Number(raw);
+            dispatchSimEvent(ev.name, payload);
+          },
+        });
       });
       btnHost.appendChild(btn);
     }
 
-    // Live Globals table
     const lastEntry = snap.trace[snap.trace.length - 1];
     const lastDiff = (lastEntry && lastEntry.diff) || {};
     const tbody = $("simGlobalsBody");
@@ -596,25 +995,31 @@
         <td><button class="global-val-btn${changed ? " changed" : ""}" title="Click to override value">${escapeHtml(String(val))}</button></td>
       `;
       tr.querySelector("button").addEventListener("click", () => {
-        const nextRaw = window.prompt(`Override globals.${key} (${g.rustType}):`, String(val));
-        if (nextRaw === null) return;
-        let parsed = nextRaw;
-        if (g.rustType === "bool") parsed = nextRaw === "true";
-        else if (g.rustType !== "String") parsed = Number(nextRaw);
-        state.sim.setGlobal(key, parsed);
-        renderSimulator();
+        openElementModal({
+          title: `Override globals.${key}`,
+          confirmLabel: "Set Value",
+          fields: [{ name: "val", label: `Value (${g.rustType})`, value: String(val) }],
+          onConfirm(vals) {
+            const nextRaw = vals.val;
+            let parsed = nextRaw;
+            if (g.rustType === "bool") parsed = nextRaw === "true";
+            else if (g.rustType !== "String") parsed = Number(nextRaw);
+            state.sim.setGlobal(key, parsed);
+            renderSimulator();
+          },
+        });
       });
       tbody.appendChild(tr);
     }
 
-    // Execution Trace (newest first)
     const traceUl = $("simTraceList");
     traceUl.innerHTML = "";
     for (const entry of [...snap.trace].reverse().slice(0, 40)) {
       const li = document.createElement("li");
       li.className = "trace-item";
       const diffParts = Object.entries(entry.diff || {}).map(([k, d]) => `${k}: ${d.before}→${d.after}`);
-      const arrow = entry.fromState === entry.toState ? `${entry.toState} (stay)` : `${entry.fromState} → ${entry.toState}`;
+      const arrow =
+        entry.fromState === entry.toState ? `${entry.toState} (stay)` : `${entry.fromState} → ${entry.toState}`;
       li.innerHTML = `
         <div class="trace-head">
           <span>#${entry.step} <strong>${escapeHtml(entry.event)}</strong></span>
@@ -656,37 +1061,42 @@
   // ---- GitHub Sync Operations (webgme-git) ----
 
   async function pullStateFromGitHub(st, opts = {}) {
-    if (!st.gitOwner || !st.gitRepo || !st.gitPath) {
-      if (!opts.silentNotFound) toast("Bind gitOwner, gitRepo, and gitPath first", "warn");
+    const m = activeMachine();
+    const eff = RustyContract.resolveStateGitLink(m, st);
+    if (!eff.gitOwner || !eff.gitRepo || !eff.gitPath) {
+      if (!opts.silentNotFound) toast("Bind GitHub Owner & Repo on this StateMachine first", "warn");
       return;
     }
     const statusEl = $("gitFetchStatus");
     if (statusEl) statusEl.textContent = "Fetching from GitHub…";
     try {
       const file = await gitClient.fetchFile({
-        owner: st.gitOwner,
-        repo: st.gitRepo,
-        path: st.gitPath,
-        ref: st.gitBranch || "main",
+        owner: eff.gitOwner,
+        repo: eff.gitRepo,
+        path: eff.gitPath,
+        ref: eff.gitBranch || "main",
         projectId: bridge.projectId,
       });
       if (file.type !== "file") {
         if (statusEl) statusEl.textContent = "";
-        toast(`Path ${st.gitPath} is a directory, expected file`, "warn");
+        toast(`Path ${eff.gitPath} is a directory, expected file`, "warn");
         return;
       }
       state.fetchedStateIds.add(st.id);
       state.dirtyStateIds.delete(st.id);
-      bridge.updateNodeAttributes(
+      const deps = RustyAnalyzer.extractDependencies(file.content, m);
+      bridge.updateStateCodeAndDeps(
         st.id,
-        { codeCache: file.content },
-        `Pull ${st.gitPath} from GitHub`,
+        file.content,
+        deps.memberIds,
+        RustyAnalyzer.serializeDepsSnapshot(deps.snapshot),
+        `Pull ${eff.gitPath} from GitHub`,
       );
       if (monacoEditor && state.selectedId === st.id) {
         monacoEditor.setValue(file.content, st.id);
       }
       if (statusEl) statusEl.textContent = "Loaded from GitHub";
-      toast(`Fetched ${st.gitPath} from ${st.gitOwner}/${st.gitRepo}`, "ok");
+      toast(`Fetched ${eff.gitPath} from ${eff.gitOwner}/${eff.gitRepo}`, "ok");
     } catch (err) {
       if (err.status === 404 && opts.silentNotFound) {
         state.fetchedStateIds.add(st.id);
@@ -699,21 +1109,25 @@
   }
 
   async function commitStatesToGitHub(statesToCommit, customMessage) {
-    if (!statesToCommit.length) {
+    const m = activeMachine();
+    if (!m || !statesToCommit.length) {
       toast("No states to commit", "warn");
       return;
     }
-    const first = statesToCommit[0];
-    if (!first.gitOwner || !first.gitRepo) {
+    const firstEff = RustyContract.resolveStateGitLink(m, statesToCommit[0]);
+    if (!firstEff.gitOwner || !firstEff.gitRepo) {
       toast("Bind a GitHub repository first (click 'Bind GitHub Repo…')", "warn");
       return;
     }
 
-    const changes = statesToCommit.map((st) => ({
-      path: st.gitPath || RustyContract.defaultStatePath(st.name),
-      content: st.code || RustyContract.defaultStateCode(st.name, []),
-      mode: "100644",
-    }));
+    const changes = statesToCommit.map((st) => {
+      const eff = RustyContract.resolveStateGitLink(m, st);
+      return {
+        path: eff.gitPath,
+        content: st.code || RustyContract.defaultStateCode(st.name, []),
+        mode: "100644",
+      };
+    });
 
     const message =
       customMessage ||
@@ -721,10 +1135,10 @@
 
     try {
       const res = await gitClient.commit({
-        owner: first.gitOwner,
-        repo: first.gitRepo,
-        branch: first.gitBranch || "main",
-        expectedParentSha: first.gitBaseCommitSha || undefined,
+        owner: firstEff.gitOwner,
+        repo: firstEff.gitRepo,
+        branch: firstEff.gitBranch || "main",
+        expectedParentSha: statesToCommit[0].gitBaseCommitSha || undefined,
         message,
         changes,
         projectId: bridge.projectId,
@@ -732,16 +1146,15 @@
 
       if (res.conflict) {
         openConflictModal(res.body, {
-          owner: first.gitOwner,
-          repo: first.gitRepo,
-          branch: first.gitBranch || "main",
+          owner: firstEff.gitOwner,
+          repo: firstEff.gitRepo,
+          branch: firstEff.gitBranch || "main",
           states: statesToCommit,
           message,
         });
         return;
       }
 
-      // Persist newCommitSha back to WebGME State nodes inside a single transaction!
       bridge.runTransaction(`Sync gitBaseCommitSha (${res.newCommitSha.slice(0, 7)})`, () => {
         for (const st of statesToCommit) {
           bridge.client.setAttribute(st.id, "gitBaseCommitSha", res.newCommitSha);
@@ -875,6 +1288,19 @@
       });
     });
 
+    // Side panel toggles & sidebar section collapse toggles
+    $("btnToggleLeftPane").addEventListener("click", () => togglePane("left"));
+    $("btnToggleRightPane").addEventListener("click", () => togglePane("right"));
+
+    document.querySelectorAll("[data-collapse-section]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const key = btn.dataset.collapseSection;
+        if (state.collapsedSections.has(key)) state.collapsedSections.delete(key);
+        else state.collapsedSections.add(key);
+        applySectionCollapseStates();
+      });
+    });
+
     // Project & Machine switching
     $("projectSelect").addEventListener("change", (e) => openSelectedProject(e.target.value));
     $("machineSelect").addEventListener("change", (e) => {
@@ -885,68 +1311,134 @@
       renderAll();
     });
 
-    $("btnNewProject").addEventListener("click", async () => {
-      const name = window.prompt("New WebGME Project Name (seeded from RustySeed):", "MyRustMachine");
-      if (!name || !name.trim()) return;
-      try {
-        const res = await bridge.createProjectFromSeed(name.trim(), state.info.defaultSeed || "RustySeed");
-        state.projects = await bridge.listProjects();
-        renderProjectSelect();
-        $("projectSelect").value = res.projectId;
-        await openSelectedProject(res.projectId);
-      } catch (err) {
-        toast(`Failed to create project: ${err.message}`, "err");
-      }
+    $("btnNewProject").addEventListener("click", () => {
+      openElementModal({
+        title: "New WebGME Project (from RustySeed)",
+        confirmLabel: "Create Project",
+        fields: [{ name: "name", label: "Project Name", value: "MyRustMachine" }],
+        async onConfirm(vals) {
+          const name = (vals.name || "").trim();
+          if (!name) return false;
+          try {
+            const res = await bridge.createProjectFromSeed(name, state.info.defaultSeed || "RustySeed");
+            state.projects = await bridge.listProjects();
+            renderProjectSelect();
+            $("projectSelect").value = res.projectId;
+            await openSelectedProject(res.projectId);
+          } catch (err) {
+            toast(`Failed to create project: ${err.message}`, "err");
+          }
+        },
+      });
     });
 
     $("btnNewMachine").addEventListener("click", () => {
-      const name = window.prompt("New StateMachine name:", "MotorController");
-      if (!name || !name.trim()) return;
-      const id = bridge.createStateMachine(name.trim());
-      state.activeMachineId = id;
-      toast(`Created StateMachine ${name.trim()}`, "ok");
+      openElementModal({
+        title: "Create New StateMachine",
+        confirmLabel: "Create Machine",
+        fields: [{ name: "name", label: "StateMachine Name", value: "SimpleCounter" }],
+        onConfirm(vals) {
+          const name = (vals.name || "").trim();
+          if (!name) return false;
+          const id = bridge.createStateMachine(name);
+          state.activeMachineId = id;
+          toast(`Created StateMachine ${name}`, "ok");
+        },
+      });
     });
 
-    // Sidebar Add buttons
+    // Sidebar Add buttons (modal-driven with clean type pickers)
     $("btnAddState").addEventListener("click", () => {
       const m = activeMachine();
       if (!m) return;
-      const name = window.prompt("New State name (PascalCase):", `State${m.states.length + 1}`);
-      if (!name || !name.trim()) return;
-      const idx = m.states.length;
-      const id = bridge.createState(m.id, {
-        name: name.trim(),
-        isInitial: idx === 0,
-        gitOwner: m.gitOwner,
-        gitRepo: m.gitRepo,
-        gitBranch: m.gitBranch || "main",
-        gitPath: `${(m.gitPath || "src/states").replace(/\/+$/, "")}/${RustyContract.toSnakeCase(name.trim())}.rs`,
-        position: { x: 120 + (idx % 3) * 230, y: 100 + Math.floor(idx / 3) * 140 },
+      openElementModal({
+        title: "Add State",
+        confirmLabel: "Add State",
+        fields: [
+          { name: "name", label: "State Name (PascalCase)", value: `State${m.states.length + 1}` },
+          { name: "description", label: "Description", placeholder: "What does this state do?", value: "" },
+          {
+            name: "color",
+            label: "Accent Color",
+            type: "select",
+            options: ["#38bdf8", "#22c55e", "#f97316", "#eab308", "#a855f7", "#ef4444"],
+            value: "#38bdf8",
+          },
+        ],
+        onConfirm(vals) {
+          const name = (vals.name || "").trim();
+          if (!name) return false;
+          const idx = m.states.length;
+          const id = bridge.createState(m.id, {
+            name,
+            description: vals.description || "",
+            isInitial: idx === 0,
+            color: vals.color || "#38bdf8",
+            position: { x: 120 + (idx % 3) * 230, y: 100 + Math.floor(idx / 3) * 140 },
+          });
+          state.selectedType = "state";
+          state.selectedId = id;
+        },
       });
-      state.selectedType = "state";
-      state.selectedId = id;
     });
 
     $("btnAddGlobal").addEventListener("click", () => {
       const m = activeMachine();
       if (!m) return;
-      const name = window.prompt("Global variable name (snake_case):", "counter");
-      if (!name || !name.trim()) return;
-      const rustType = window.prompt("Rust type (bool, i32, i64, u32, f64, String):", "u32") || "u32";
-      const initialValue = window.prompt("Initial value:", rustType === "bool" ? "false" : "0") || "0";
-      bridge.createGlobalVar(m.id, { name: name.trim(), rustType: rustType.trim(), initialValue: initialValue.trim() });
+      openElementModal({
+        title: "Add Global Variable",
+        confirmLabel: "Add Variable",
+        fields: [
+          { name: "name", label: "Field Name (snake_case)", value: "counter" },
+          {
+            name: "rustType",
+            label: "Rust Type",
+            type: "select",
+            options: ["u32", "i32", "i64", "f64", "bool", "String"],
+            value: "u32",
+          },
+          { name: "initialValue", label: "Initial Value", value: "0" },
+        ],
+        onConfirm(vals) {
+          const name = (vals.name || "").trim();
+          if (!name) return false;
+          bridge.createGlobalVar(m.id, {
+            name,
+            rustType: vals.rustType || "i32",
+            initialValue: (vals.initialValue || "0").trim(),
+          });
+        },
+      });
     });
 
     $("btnAddEvent").addEventListener("click", () => {
       const m = activeMachine();
       if (!m) return;
-      const name = window.prompt("Event variant name (PascalCase):", "ButtonPressed");
-      if (!name || !name.trim()) return;
-      const payloadType = window.prompt("Optional payload type (leave empty for unit event, or i32/f64/bool/String):", "") || "";
-      bridge.createEventDef(m.id, { name: name.trim(), payloadType: payloadType.trim() });
+      openElementModal({
+        title: "Add Event Definition",
+        confirmLabel: "Add Event",
+        fields: [
+          { name: "name", label: "Event Name (PascalCase)", value: "Step" },
+          {
+            name: "payloadType",
+            label: "Optional Payload Type",
+            type: "select",
+            options: ["", "i32", "u32", "f64", "bool", "String"],
+            value: "",
+          },
+        ],
+        onConfirm(vals) {
+          const name = (vals.name || "").trim();
+          if (!name) return false;
+          bridge.createEventDef(m.id, {
+            name,
+            payloadType: vals.payloadType || "",
+          });
+        },
+      });
     });
 
-    // Canvas toolbar
+    // Canvas fixed-layout & badge controls
     $("btnConnectMode").addEventListener("click", () => {
       state.connectMode = !state.connectMode;
       state.connectSourceId = null;
@@ -954,23 +1446,17 @@
       if (state.connectMode) toast("Click source state, then destination state", "ok");
     });
 
-    $("btnAutoLayout").addEventListener("click", () => {
-      const m = activeMachine();
-      if (!m || !m.states.length) return;
-      const positions = {};
-      const cx = 390;
-      const cy = 210;
-      const rx = 250;
-      const ry = 135;
-      m.states.forEach((st, i) => {
-        const angle = (2 * Math.PI * i) / m.states.length - Math.PI / 2;
-        positions[st.id] = {
-          x: Math.max(40, cx + rx * Math.cos(angle) - 86),
-          y: Math.max(40, cy + ry * Math.sin(angle) - 34),
-        };
-      });
-      bridge.updateStatePositions(positions);
-      toast("Saved auto-layout positions to WebGME", "ok");
+    $("btnLayoutDir").addEventListener("click", () => {
+      state.layoutDirection = state.layoutDirection === "LR" ? "TB" : "LR";
+      $("btnLayoutDir").textContent = `⇄ ${state.layoutDirection}`;
+      renderCanvas();
+    });
+
+    $("btnEdgeLabels").addEventListener("click", () => {
+      state.compactLabels = !state.compactLabels;
+      $("btnEdgeLabels").classList.toggle("btn-active", state.compactLabels);
+      $("btnEdgeLabels").textContent = state.compactLabels ? "🏷 Badges" : "🏷 Full Text";
+      renderCanvas();
     });
 
     // State Inspector actions
@@ -987,29 +1473,37 @@
           isFinal: $("inpStateFinal").checked,
           gitOwner: $("inpGitOwner").value.trim(),
           gitRepo: $("inpGitRepo").value.trim(),
-          gitBranch: $("inpGitBranch").value.trim() || "main",
+          gitBranch: $("inpGitBranch").value.trim(),
           gitPath: $("inpGitPath").value.trim(),
         },
         `Update State ${st.name}`,
       );
-      toast(`Saved ${st.name} to WebGME`, "ok");
+      toast(`Saved ${st.name} design attributes`, "ok");
     });
 
     $("btnExpandEditor").addEventListener("click", () => {
-      const ws = document.querySelector(".workspace");
+      const ws = $("workspaceGrid");
       const expanded = ws.classList.toggle("editor-expanded");
       $("btnExpandEditor").textContent = expanded ? "⇒ Narrow" : "⇔ Wide";
       if (monacoEditor) setTimeout(() => monacoEditor.layout(), 180);
     });
 
     $("btnSaveCodeCache").addEventListener("click", () => {
+      const m = activeMachine();
       const st = selectedStateObj();
-      if (!st || !monacoEditor) return;
+      if (!m || !st || !monacoEditor) return;
       const code = monacoEditor.getValue();
-      bridge.updateNodeAttributes(st.id, { codeCache: code }, `Update Rust code for ${st.name}`);
+      const deps = RustyAnalyzer.extractDependencies(code, m);
+      bridge.updateStateCodeAndDeps(
+        st.id,
+        code,
+        deps.memberIds,
+        RustyAnalyzer.serializeDepsSnapshot(deps.snapshot),
+        `Save draft & dependsOn for ${st.name}`,
+      );
       state.dirtyStateIds.delete(st.id);
       $("codeDirtyHint").textContent = "Saved to WebGME";
-      toast(`Saved draft Rust code for ${st.name} to WebGME`, "ok");
+      toast(`Saved draft & dependencies for ${st.name}`, "ok");
     });
 
     $("btnResetStateTemplate").addEventListener("click", () => {
@@ -1040,22 +1534,35 @@
       saveOrCommitActiveState();
     });
 
-    // Transition Inspector actions
+    // Transition Inspector actions (live guard validation + dependsOn sync)
+    $("inpTransGuard").addEventListener("input", () => {
+      renderGuardDiagnostics(selectedTransitionObj());
+    });
+    $("inpTransEvent").addEventListener("input", () => {
+      renderGuardDiagnostics(selectedTransitionObj());
+    });
+
     $("btnSaveTransition").addEventListener("click", () => {
+      const m = activeMachine();
       const tr = selectedTransitionObj();
-      if (!tr) return;
-      bridge.updateNodeAttributes(
+      if (!m || !tr) return;
+      const event = $("inpTransEvent").value.trim() || "Tick";
+      const guard = $("inpTransGuard").value.trim();
+      const deps = RustyAnalyzer.extractDependencies(guard, m, { triggerEvent: event });
+      bridge.updateTransitionAndDeps(
         tr.id,
         {
           name: $("inpTransName").value.trim() || tr.name,
-          event: $("inpTransEvent").value.trim() || "Tick",
+          event,
           priority: Number($("inpTransPriority").value || 1),
-          guard: $("inpTransGuard").value.trim(),
+          guard,
           action: $("inpTransAction").value.trim(),
         },
-        `Update Transition ${tr.name}`,
+        deps.memberIds,
+        RustyAnalyzer.serializeDepsSnapshot(deps.snapshot),
+        `Update Transition ${tr.name} & dependsOn`,
       );
-      toast("Saved transition to WebGME", "ok");
+      toast("Saved transition & guard dependencies", "ok");
     });
 
     $("btnDeleteTransition").addEventListener("click", () => {
@@ -1069,11 +1576,24 @@
     // GitBar actions
     $("btnPickRepo").addEventListener("click", openRepoModal);
     $("btnConfirmRepoBind").addEventListener("click", confirmRepoBind);
+    $("btnImportGitHub").addEventListener("click", openImportModal);
+    $("btnConfirmImportGitHub").addEventListener("click", confirmImportGitHub);
+    document.querySelectorAll("[data-import-preset]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const [owner, repo, branch, ...dirParts] = btn.dataset.importPreset.split("/");
+        $("importGitOwner").value = owner;
+        $("importGitRepo").value = repo;
+        $("importGitBranch").value = branch;
+        $("importGitDir").value = dirParts.join("/");
+      });
+    });
+
     $("btnPullAll").addEventListener("click", async () => {
       const m = activeMachine();
       if (!m) return;
       for (const st of m.states) {
-        if (st.gitOwner && st.gitRepo && st.gitPath) {
+        const eff = RustyContract.resolveStateGitLink(m, st);
+        if (eff.gitOwner && eff.gitRepo && eff.gitPath) {
           await pullStateFromGitHub(st);
         }
       }
@@ -1090,8 +1610,8 @@
         return;
       }
       const files = RustyCodegen.generateCrateFiles(m);
-      const changes = Object.entries(files).map(([path, content]) => ({
-        path,
+      const changes = Object.entries(files).map(([relPath, content]) => ({
+        path: RustyContract.resolveCrateFilePath(m, relPath),
         content,
         mode: "100644",
       }));
@@ -1100,7 +1620,7 @@
           owner: m.gitOwner,
           repo: m.gitRepo,
           branch: m.gitBranch || "main",
-          message: `rusty: push generated crate ${m.crateName}`,
+          message: `rusty: push standalone crate ${m.crateName}`,
           changes,
           projectId: bridge.projectId,
         });
@@ -1110,7 +1630,7 @@
             repo: m.gitRepo,
             branch: m.gitBranch || "main",
             states: m.states,
-            message: `rusty: push generated crate ${m.crateName}`,
+            message: `rusty: push standalone crate ${m.crateName}`,
           });
           return;
         }
@@ -1151,6 +1671,11 @@
       if (state.simTimer) startAutoTick();
     });
     $("btnVerifyNativeTrace").addEventListener("click", verifyTraceInNativeRust);
+
+    // Element modal confirm
+    $("btnConfirmElementModal").addEventListener("click", () => {
+      if (state.elementModalConfirm) state.elementModalConfirm();
+    });
 
     // Conflict modal buttons
     $("btnUseUpstream").addEventListener("click", () => {
@@ -1197,8 +1722,8 @@
     if (!m) return;
     $("modalGitOwner").value = m.gitOwner || "";
     $("modalGitRepo").value = m.gitRepo || "";
-    $("modalGitBranch").value = m.gitBranch || "main";
-    $("modalGitDir").value = m.gitPath || "src/states";
+    $("modalGitBranch").value = m.gitBranch || "dev";
+    $("modalGitDir").value = m.gitPath || "examples/my-machine";
     $("repoModal").classList.remove("hidden");
 
     const dropdown = $("repoDropdown");
@@ -1249,17 +1774,72 @@
     const gitRepo = $("modalGitRepo").value.trim();
     const gitBranch = $("modalGitBranch").value.trim() || "main";
     const gitPath = $("modalGitDir").value.trim() || "src/states";
-    const applyAll = $("modalApplyToAllStates").checked;
+    const clearOverrides = $("modalClearStateOverrides").checked;
 
     bridge.bindMachineRepo(m.id, {
       gitOwner,
       gitRepo,
       gitBranch,
       gitPath,
-      applyToStateIds: applyAll ? m.states : [],
+      clearStateOverrides: clearOverrides,
+      stateIds: m.states.map((s) => s.id),
     });
     $("repoModal").classList.add("hidden");
-    toast(`Bound ${gitOwner}/${gitRepo}@${gitBranch} in WebGME`, "ok");
+    toast(`Bound ${gitOwner}/${gitRepo}@${gitBranch} (${gitPath})`, "ok");
+  }
+
+  function openImportModal() {
+    $("importModalStatus").textContent = "";
+    $("importModal").classList.remove("hidden");
+  }
+
+  async function confirmImportGitHub() {
+    const owner = $("importGitOwner").value.trim();
+    const repo = $("importGitRepo").value.trim();
+    const branch = $("importGitBranch").value.trim() || "main";
+    const dirPath = $("importGitDir").value.trim();
+    const machineName = $("importMachineName").value.trim();
+    if (!owner || !repo || !dirPath) {
+      toast("Enter Owner, Repo, and Directory Path", "warn");
+      return;
+    }
+
+    const status = $("importModalStatus");
+    const btn = $("btnConfirmImportGitHub");
+    btn.disabled = true;
+    status.textContent = `Sweeping ${owner}/${repo}/${dirPath}@${branch}…`;
+
+    try {
+      const filesMap = await gitClient.sweepDirectoryFiles({
+        owner,
+        repo,
+        dirPath,
+        ref: branch,
+        projectId: bridge.projectId,
+      });
+      const { model, summary } = RustyImporter.parseCrateFilesToModel(filesMap, {
+        owner,
+        repo,
+        branch,
+        dirPath,
+        machineName,
+      });
+      const newSmId = bridge.importStateMachineModel(model);
+      state.activeMachineId = newSmId;
+      state.selectedType = null;
+      state.selectedId = null;
+      $("importModal").classList.add("hidden");
+      toast(
+        `Imported ${model.name} (${summary.states} states, ${summary.transitions} transitions)`,
+        "ok",
+      );
+      renderAll();
+    } catch (err) {
+      status.textContent = `Error: ${err.message}`;
+      toast(`GitHub import failed: ${err.message}`, "err");
+    } finally {
+      btn.disabled = false;
+    }
   }
 
   function escapeHtml(str) {

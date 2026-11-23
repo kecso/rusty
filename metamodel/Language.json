@@ -77,6 +77,7 @@
         "isFinal": false,
         "color": "#38bdf8",
         "codeCache": "",
+        "depsSignature": "",
         "gitArtifactType": "file"
       },
       "attribute_meta": {
@@ -85,7 +86,8 @@
         "isInitial": { "type": "boolean" },
         "isFinal": { "type": "boolean" },
         "color": { "type": "string" },
-        "codeCache": { "type": "string" }
+        "codeCache": { "type": "string" },
+        "depsSignature": { "type": "string" }
       },
       "pointers": {
         "base": "/1"
@@ -103,6 +105,7 @@
         "event": "Tick",
         "guard": "",
         "action": "",
+        "depsSignature": "",
         "priority": 1
       },
       "attribute_meta": {
@@ -110,6 +113,7 @@
         "event": { "type": "string" },
         "guard": { "type": "string" },
         "action": { "type": "string" },
+        "depsSignature": { "type": "string" },
         "priority": { "type": "integer" }
       },
       "pointers": {
