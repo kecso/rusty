@@ -21,18 +21,14 @@
     activeMachineId: null,
     selectedType: null, // 'state' | 'transition' | null
     selectedId: null,
-    stateHookTab: "entry", // 'entry' | 'exit' | 'transitions'
-    transSubTab: "guard", // 'guard' | 'action'
+    centerTab: "canvas", // 'canvas' | 'crate'
+    minimapCollapsed: false,
+    codeEditorSession: null,
     connectMode: false,
     connectSourceId: null,
     dirtyStateIds: new Set(),
     dirtyTransIds: new Set(),
-    draftEntryByStateId: new Map(),
-    draftExitByStateId: new Map(),
-    draftActionByTransId: new Map(),
     fetchedStateIds: new Set(),
-    editorLoadedHookKey: null,
-    transLoadedActionKey: null,
     activeCrateFile: "Cargo.toml",
     // Layout & UI visibility
     leftHidden: false,
@@ -54,8 +50,7 @@
   };
 
   const $ = (id) => document.getElementById(id);
-  let monacoEditor = null;
-  let transActionEditor = null;
+  let centerCodeEditor = null;
 
   function toast(msg, kind = "ok") {
     const el = document.createElement("div");
@@ -90,15 +85,20 @@
 
   function getLiveStateHookBody(st, kind) {
     if (!st) return "";
-    if (kind === "entry") {
-      return state.draftEntryByStateId.has(st.id) ? state.draftEntryByStateId.get(st.id) : st.entryCode || "";
+    const sess = state.codeEditorSession;
+    if (sess && sess.mode === "state-hook" && sess.stateId === st.id) {
+      return kind === "entry" ? sess.draftEntry : sess.draftExit;
     }
-    return state.draftExitByStateId.has(st.id) ? state.draftExitByStateId.get(st.id) : st.exitCode || "";
+    return kind === "entry" ? st.entryCode || "" : st.exitCode || "";
   }
 
   function getLiveTransitionAction(tr) {
     if (!tr) return "";
-    return state.draftActionByTransId.has(tr.id) ? state.draftActionByTransId.get(tr.id) : tr.action || "";
+    const sess = state.codeEditorSession;
+    if (sess && sess.mode === "transition-action" && sess.transitionId === tr.id) {
+      return sess.draftAction;
+    }
+    return tr.action || "";
   }
 
   function openElementModal({ title, fields, confirmLabel = "Save", onConfirm }) {
@@ -117,10 +117,15 @@
       let input;
       if (f.type === "select") {
         input = document.createElement("select");
-        for (const optVal of f.options || []) {
+        for (const item of f.options || []) {
+          const optVal = typeof item === "object" && item !== null ? item.value : item;
+          const optLabel =
+            typeof item === "object" && item !== null
+              ? item.label
+              : optVal || "(none — unit event)";
           const opt = document.createElement("option");
           opt.value = optVal;
-          opt.textContent = optVal || "(none — unit event)";
+          opt.textContent = optLabel;
           if (optVal === (f.value ?? "")) opt.selected = true;
           input.appendChild(opt);
         }
@@ -199,6 +204,127 @@
     tip.style.top = `${Math.min(relY, maxY)}px`;
   }
 
+  function openTransitionCreateModal(defaultSrcId = null, defaultDstId = null) {
+    const m = activeMachine();
+    if (!m || !m.states || m.states.length === 0) {
+      toast("Create at least one State before adding a transition", "warn");
+      return;
+    }
+    const stateOpts = m.states.map((s) => ({ value: s.id, label: s.name }));
+    const initialSrc = defaultSrcId && m.states.some((s) => s.id === defaultSrcId) ? defaultSrcId : m.states[0].id;
+    const initialDst = defaultDstId && m.states.some((s) => s.id === defaultDstId) ? defaultDstId : initialSrc;
+    const evOptions = m.events.map((e) => e.name);
+
+    openElementModal({
+      title: "Add Transition",
+      confirmLabel: "Create Transition",
+      fields: [
+        {
+          name: "srcId",
+          label: "Source State",
+          type: "select",
+          options: stateOpts,
+          value: initialSrc,
+        },
+        {
+          name: "dstId",
+          label: "Target State",
+          type: "select",
+          options: stateOpts,
+          value: initialDst,
+        },
+        {
+          name: "event",
+          label: "Trigger Event",
+          type: evOptions.length ? "select" : "text",
+          options: evOptions,
+          value: evOptions[0] || "Tick",
+        },
+        {
+          name: "name",
+          label: "Short Transition Name",
+          placeholder: "e.g. step_count",
+          value: "",
+        },
+        {
+          name: "guard",
+          label: "Pure Guard Expression (optional)",
+          placeholder: "e.g. count < limit",
+          value: "",
+        },
+      ],
+      onConfirm(vals) {
+        const srcId = vals.srcId;
+        const dstId = vals.dstId;
+        const srcSt = m.states.find((s) => s.id === srcId);
+        const dstSt = m.states.find((s) => s.id === dstId);
+        if (!srcSt || !dstSt) {
+          toast("Select both Source and Target states", "warn");
+          return false;
+        }
+        const isSelf = srcId === dstId;
+        const eventName = (vals.event || "").trim() || "Tick";
+        const guard = (vals.guard || "").trim();
+        const shortName =
+          (vals.name || "").trim() ||
+          RustyContract.toSnakeCase(`${eventName}_${dstSt.name || "next"}`);
+        const deps = RustyAnalyzer.extractDependencies("", m, {
+          triggerEvent: eventName,
+          guardText: guard,
+          actionText: "",
+        });
+        const tid = bridge.createTransition(m.id, {
+          srcId,
+          dstId,
+          name: shortName,
+          event: eventName,
+          guard,
+          action: "",
+          reenter: false,
+        });
+        bridge.syncNodeDependencies(
+          tid,
+          deps.memberIds,
+          RustyAnalyzer.serializeDepsSnapshot(deps.snapshot),
+          `Set dependsOn for transition ${eventName}`,
+        );
+        toast(`Created ${isSelf ? "self-transition" : "transition"} ${srcSt.name} → ${dstSt.name} (${eventName})`, "ok");
+        selectTransitionForEditing(tid);
+      },
+    });
+  }
+
+  function startTransitionCreation(preselectedSourceId = null) {
+    const m = activeMachine();
+    if (!m || !m.states || m.states.length === 0) {
+      toast("Create at least one State before adding a transition", "warn");
+      return;
+    }
+    if (state.codeEditorSession && !confirmDiscardCodeEditorIfDirty()) {
+      return;
+    }
+    if (state.codeEditorSession) {
+      closeCodeEditorSession(false);
+    }
+    state.centerTab = "canvas";
+    state.connectMode = true;
+    state.connectSourceId =
+      preselectedSourceId && m.states.some((s) => s.id === preselectedSourceId)
+        ? preselectedSourceId
+        : null;
+    updateCanvasTooltip(null);
+    renderAll();
+  }
+
+  function cancelTransitionCreation() {
+    if (!state.connectMode) return;
+    state.connectMode = false;
+    state.connectSourceId = null;
+    renderAll();
+  }
+
+  const minimapCanvas = new StateMachineCanvas($("minimapSvg"), {});
+
   const canvas = new StateMachineCanvas($("smSvg"), {
     onSelectState(id) {
       if (state.rightHidden) togglePane("right", false);
@@ -208,10 +334,18 @@
       if (state.rightHidden) togglePane("right", false);
       selectTransitionForEditing(id);
     },
+    onDoubleClickState(id) {
+      openStateHookEditor(id, "entry");
+    },
+    onDoubleClickTransition(id) {
+      openTransitionActionEditor(id);
+    },
     onBackgroundClick() {
+      if (state.connectMode) {
+        return;
+      }
       state.selectedType = null;
       state.selectedId = null;
-      state.connectSourceId = null;
       updateCanvasTooltip(null);
       renderAll();
     },
@@ -221,102 +355,26 @@
       if (!m) return;
       if (!state.connectSourceId) {
         state.connectSourceId = stateId;
-        toast("Select destination state for transition (click same state for self-transition)", "ok");
         renderCanvas();
         return;
       }
       const srcId = state.connectSourceId;
       state.connectSourceId = null;
       state.connectMode = false;
-      $("btnConnectMode").classList.remove("btn-active");
-
-      const srcSt = m.states.find((s) => s.id === srcId);
-      const dstSt = m.states.find((s) => s.id === stateId);
-      const isSelf = srcId === stateId;
-      const evOptions = m.events.map((e) => e.name);
-      openElementModal({
-        title: `Create Transition (${srcSt ? srcSt.name : "?"} → ${dstSt ? dstSt.name : "?"})`,
-        confirmLabel: "Create Transition",
-        fields: [
-          {
-            name: "event",
-            label: "Trigger Event",
-            type: evOptions.length ? "select" : "text",
-            options: evOptions,
-            value: evOptions[0] || "Tick",
-          },
-          {
-            name: "name",
-            label: "Short Transition Name",
-            placeholder: "e.g. step_count",
-            value: "",
-          },
-          {
-            name: "guard",
-            label: "Pure Guard Expression (optional)",
-            placeholder: "e.g. count < limit",
-            value: "",
-          },
-        ],
-        onConfirm(vals) {
-          const eventName = (vals.event || "").trim() || "Tick";
-          const guard = (vals.guard || "").trim();
-          const shortName =
-            (vals.name || "").trim() ||
-            RustyContract.toSnakeCase(`${eventName}_${dstSt ? dstSt.name : "next"}`);
-          const deps = RustyAnalyzer.extractDependencies("", m, {
-            triggerEvent: eventName,
-            guardText: guard,
-            actionText: "",
-          });
-          const tid = bridge.createTransition(m.id, {
-            srcId,
-            dstId: stateId,
-            name: shortName,
-            event: eventName,
-            guard,
-            action: "",
-            reenter: false,
-          });
-          bridge.syncNodeDependencies(
-            tid,
-            deps.memberIds,
-            RustyAnalyzer.serializeDepsSnapshot(deps.snapshot),
-            `Set dependsOn for transition ${eventName}`,
-          );
-          toast(`Created ${isSelf ? "self-transition" : "transition"} on ${eventName}`, "ok");
-          selectTransitionForEditing(tid);
-        },
-      });
+      renderCanvas();
+      openTransitionCreateModal(srcId, stateId);
     },
   });
 
-  async function selectStateForEditing(id) {
+  function selectStateForEditing(id) {
     state.selectedType = "state";
     state.selectedId = id;
-    state.editorLoadedHookKey = null;
     renderAll();
-
-    const m = activeMachine();
-    const st = selectedStateObj();
-    if (!m || !st) return;
-    const eff = RustyContract.resolveStateGitLink(m, st);
-    if (
-      eff.gitOwner &&
-      eff.gitRepo &&
-      eff.gitPath &&
-      state.gitStatus.hasGithubToken &&
-      !state.dirtyStateIds.has(st.id) &&
-      !state.fetchedStateIds.has(st.id)
-    ) {
-      await pullStateFromGitHub(st, { silentNotFound: true });
-    }
   }
 
   function selectTransitionForEditing(id) {
     state.selectedType = "transition";
     state.selectedId = id;
-    state.transLoadedActionKey = null;
     renderAll();
   }
 
@@ -457,117 +515,364 @@
     }
   }
 
-  async function saveOrCommitActiveStateHook(doGitCommit = true) {
-    const m = activeMachine();
-    const st = selectedStateObj();
-    if (!m || !st || !monacoEditor) return;
-    if (state.stateHookTab === "transitions") return;
+  function renderCenterMode() {
+    const editing = Boolean(state.codeEditorSession);
+    document.querySelectorAll("[data-center-tab]").forEach((b) => {
+      const tab = b.dataset.centerTab;
+      b.classList.toggle("active", !editing && tab === state.centerTab);
+    });
+    $("tabCanvas").classList.toggle("active", !editing && state.centerTab === "canvas");
+    $("tabCodeEditor").classList.toggle("active", editing);
+    $("tabCrate").classList.toggle("active", !editing && state.centerTab === "crate");
+    $("canvasToolbar").classList.toggle("hidden", editing || state.centerTab !== "canvas");
+    $("designMinimapCard").classList.toggle("collapsed", state.minimapCollapsed);
+    $("btnToggleMinimap").textContent = state.minimapCollapsed ? "+" : "−";
 
-    const hookBody = monacoEditor.getEditableBody();
-    if (state.stateHookTab === "entry") state.draftEntryByStateId.set(st.id, hookBody);
-    else state.draftExitByStateId.set(st.id, hookBody);
-
-    const check = monacoEditor.runInstantAnalysis();
-    if (doGitCommit && check && check.stats.errors > 0) {
-      const proceed = window.confirm(
-        `Edit-time analyzer found ${check.stats.errors} error(s) in ${st.name}::${state.stateHookTab}. Commit & Push anyway?`,
-      );
-      if (!proceed) return;
-    }
-
-    const entryCode = getLiveStateHookBody(st, "entry");
-    const exitCode = getLiveStateHookBody(st, "exit");
-    const updatedState = { ...st, entryCode, exitCode };
-    const composed = RustyContract.composeStateModuleRs(m, updatedState).code;
-    const deps = RustyAnalyzer.extractDependencies(`${entryCode}\n${exitCode}`, m);
-
-    bridge.updateStateHookAndCode(
-      st.id,
-      { entryCode, exitCode, codeCache: composed },
-      deps.memberIds,
-      RustyAnalyzer.serializeDepsSnapshot(deps.snapshot),
-      `Save ${st.name} (${state.stateHookTab} hook & dependsOn)`,
-    );
-
-    state.draftEntryByStateId.delete(st.id);
-    state.draftExitByStateId.delete(st.id);
-    state.editorLoadedHookKey = null;
-
-    const eff = RustyContract.resolveStateGitLink(m, updatedState);
-    if (doGitCommit && eff.gitOwner && eff.gitRepo && state.gitStatus.hasGithubToken) {
-      await commitStatesToGitHub([{ ...updatedState, code: composed }]);
-    } else {
-      state.dirtyStateIds.delete(st.id);
-      $("codeDirtyHint").textContent = "Saved to WebGME";
-      toast(`Saved ${st.name} ${state.stateHookTab} hook`, "ok");
-      renderAll();
+    if (editing && centerCodeEditor) {
+      requestAnimationFrame(() => {
+        if (centerCodeEditor) centerCodeEditor.layout();
+      });
     }
   }
 
-  function buildTempMachineWithTransitionOverride(m, tr, overrides) {
-    return {
-      ...m,
-      transitions: (m.transitions || []).map((t) => (t.id === tr.id ? { ...t, ...overrides } : t)),
-    };
+  function confirmDiscardCodeEditorIfDirty() {
+    const sess = state.codeEditorSession;
+    if (!sess || !sess.dirty) return true;
+    return window.confirm("Discard unsaved code edits and return to the design?");
   }
 
-  async function saveOrCommitTransitionAction(doGitCommit = true) {
+  function syncCodeEditorHeaderButtons(isConnected) {
+    const sess = state.codeEditorSession;
+    if (!sess) return;
+    const showGit = Boolean(isConnected);
+    $("btnCommitCodeEditor").classList.toggle("hidden", !showGit);
+    $("btnPullCodeEditor").classList.toggle("hidden", !(showGit && sess.mode === "state-hook"));
+    $("btnSaveCodeEditor").textContent = showGit ? "Save Draft" : "Save";
+    $("codeEditorDirtyHint").textContent = sess.dirty ? "Unsaved edits" : "";
+  }
+
+  function loadCenterEditorFromSession() {
     const m = activeMachine();
-    const tr = selectedTransitionObj();
-    if (!m || !tr || !transActionEditor) return;
+    const sess = state.codeEditorSession;
+    if (!m || !sess || !centerCodeEditor) return;
 
-    const actionBody = transActionEditor.getEditableBody();
-    state.draftActionByTransId.set(tr.id, actionBody);
+    if (sess.mode === "state-hook") {
+      const st = m.states.find((s) => s.id === sess.stateId);
+      if (!st) return;
+      const hookKind = sess.hookKind === "exit" ? "exit" : "entry";
+      const tempSt = { ...st, entryCode: sess.draftEntry, exitCode: sess.draftExit };
+      const composed = RustyContract.composeStateModuleRs(m, tempSt, {
+        editableHook: hookKind,
+      });
+      const span = composed.hooks[hookKind];
+      const eff = RustyContract.resolveStateGitLink(m, st);
+      const isConnected = Boolean(eff && eff.gitOwner && eff.gitRepo);
+      const snakeFile = `${RustyContract.toSnakeCase(st.name)}.rs`;
 
-    const check = transActionEditor.runInstantAnalysis();
-    if (doGitCommit && check && check.stats.errors > 0) {
-      const proceed = window.confirm(
-        `Edit-time analyzer found ${check.stats.errors} error(s) in transition action. Save & Push anyway?`,
-      );
-      if (!proceed) return;
+      $("codeEditorKindPill").className = "kind-pill";
+      $("codeEditorKindPill").textContent = "State Hook";
+      $("codeEditorTitle").textContent = `${st.name} :: ${span.fnName}`;
+      $("codeEditorFilePath").textContent = isConnected
+        ? `${eff.gitOwner}/${eff.gitRepo}@${eff.gitBranch}:${eff.gitPath}`
+        : eff.gitPath || `src/states/${snakeFile}`;
+      $("codeEditorHookSwitcher").classList.remove("hidden");
+      document.querySelectorAll("[data-editor-hook]").forEach((btn) => {
+        btn.classList.toggle("active", btn.dataset.editorHook === hookKind);
+      });
+      $("codeEditorSubtitle").textContent = `${span.fnName}(...) in ${snakeFile} · surrounding lines read-only`;
+      syncCodeEditorHeaderButtons(isConnected);
+
+      centerCodeEditor.setContext(m, tempSt, { kind: hookKind, payloadType: "" });
+      centerCodeEditor.setContextualFile({
+        code: composed.code,
+        editableStartLine: span.startLine,
+        editableEndLine: span.endLine,
+        hookContext: { kind: hookKind, payloadType: "" },
+        stateId: st.id,
+        reveal: true,
+      });
+      requestAnimationFrame(() => {
+        centerCodeEditor.layout();
+        centerCodeEditor.revealEditableRegion();
+      });
+      return;
     }
 
-    const srcSt = m.states.find((s) => s.id === tr.srcId || s.name === tr.srcName);
-    const liveName = $("inpTransName").value.trim() || tr.name;
-    const liveEvent = $("inpTransEvent").value.trim() || tr.event;
-    const liveGuard = $("inpTransGuard").value.trim();
-    const liveReenter = Boolean($("inpTransReenter").checked);
+    const tr = m.transitions.find((t) => t.id === sess.transitionId);
+    const srcSt = tr && m.states.find((s) => s.id === tr.srcId || s.name === tr.srcName);
+    if (!tr || !srcSt) return;
+
+    const liveName = ($("inpTransName") && $("inpTransName").value.trim()) || tr.name;
+    const liveEvent = ($("inpTransEvent") && $("inpTransEvent").value.trim()) || tr.event;
+    const liveGuard = $("inpTransGuard") ? $("inpTransGuard").value.trim() : tr.guard || "";
+    const liveReenter = $("inpTransReenter") ? Boolean($("inpTransReenter").checked) : Boolean(tr.reenter);
 
     const tempMachine = buildTempMachineWithTransitionOverride(m, tr, {
       name: liveName,
       event: liveEvent,
       guard: liveGuard,
       reenter: liveReenter,
-      action: actionBody,
+      action: sess.draftAction,
+    });
+    const trKey = RustyContract.transitionKey(tr);
+    const composed = RustyContract.composeStateModuleRs(tempMachine, srcSt, {
+      editableHook: "transition",
+      includeTransitionKey: trKey,
+    });
+    const span = composed.hooks.transitions[trKey];
+    if (!span) return;
+
+    const eff = RustyContract.resolveStateGitLink(tempMachine, srcSt);
+    const isConnected = Boolean(eff && eff.gitOwner && eff.gitRepo);
+    const snakeFile = `${RustyContract.toSnakeCase(srcSt.name)}.rs`;
+
+    $("codeEditorKindPill").className = "kind-pill kind-transition";
+    $("codeEditorKindPill").textContent = "Action Hook";
+    $("codeEditorTitle").textContent = `${tr.srcName} → ${tr.dstName} (${liveEvent})`;
+    $("codeEditorFilePath").textContent = isConnected
+      ? `${eff.gitOwner}/${eff.gitRepo}@${eff.gitBranch}:${eff.gitPath}`
+      : eff.gitPath || `src/states/${snakeFile}`;
+    $("codeEditorHookSwitcher").classList.add("hidden");
+    $("codeEditorSubtitle").textContent = `${span.fnName}(...) in ${snakeFile} · surrounding lines read-only`;
+    syncCodeEditorHeaderButtons(isConnected);
+
+    const hookCtx = { kind: "transition", payloadType: span.payloadType || "" };
+    centerCodeEditor.setContext(tempMachine, srcSt, hookCtx);
+    centerCodeEditor.setContextualFile({
+      code: composed.code,
+      editableStartLine: span.startLine,
+      editableEndLine: span.endLine,
+      hookContext: hookCtx,
+      stateId: srcSt.id,
+      reveal: true,
+    });
+    requestAnimationFrame(() => {
+      centerCodeEditor.layout();
+      centerCodeEditor.revealEditableRegion();
+    });
+  }
+
+  async function openStateHookEditor(stateId, hookKind = "entry") {
+    const m = activeMachine();
+    if (!m) return;
+    const st = m.states.find((s) => s.id === stateId);
+    if (!st) return;
+
+    const normalizedKind = hookKind === "exit" ? "exit" : "entry";
+    const existing = state.codeEditorSession;
+    if (existing && existing.mode === "state-hook" && existing.stateId === st.id) {
+      switchCodeEditorStateHook(normalizedKind);
+      return;
+    }
+    if (existing && !confirmDiscardCodeEditorIfDirty()) {
+      return;
+    }
+
+    state.connectMode = false;
+    state.connectSourceId = null;
+    state.selectedType = "state";
+    state.selectedId = st.id;
+    state.codeEditorSession = {
+      mode: "state-hook",
+      stateId: st.id,
+      hookKind: normalizedKind,
+      draftEntry: st.entryCode || "",
+      draftExit: st.exitCode || "",
+      dirty: false,
+    };
+    $("gitFetchStatus").textContent = "";
+    renderAll();
+    loadCenterEditorFromSession();
+    if (centerCodeEditor && centerCodeEditor.editor) centerCodeEditor.editor.focus();
+
+    const eff = RustyContract.resolveStateGitLink(m, st);
+    if (
+      eff.gitOwner &&
+      eff.gitRepo &&
+      eff.gitPath &&
+      state.gitStatus.hasGithubToken &&
+      !state.fetchedStateIds.has(st.id)
+    ) {
+      await pullStateFromGitHub(st, { silentNotFound: true });
+    }
+  }
+
+  function openTransitionActionEditor(transitionId) {
+    const m = activeMachine();
+    if (!m) return;
+    const tr = m.transitions.find((t) => t.id === transitionId);
+    if (!tr) return;
+    const srcSt = m.states.find((s) => s.id === tr.srcId || s.name === tr.srcName);
+    if (!srcSt) {
+      toast("Source state not found for this transition", "err");
+      return;
+    }
+
+    const existing = state.codeEditorSession;
+    if (existing && existing.mode === "transition-action" && existing.transitionId === tr.id) {
+      renderCenterMode();
+      loadCenterEditorFromSession();
+      if (centerCodeEditor && centerCodeEditor.editor) centerCodeEditor.editor.focus();
+      return;
+    }
+    if (existing && !confirmDiscardCodeEditorIfDirty()) {
+      return;
+    }
+
+    state.connectMode = false;
+    state.connectSourceId = null;
+    state.selectedType = "transition";
+    state.selectedId = tr.id;
+    state.codeEditorSession = {
+      mode: "transition-action",
+      transitionId: tr.id,
+      stateId: srcSt.id,
+      draftAction: tr.action || "",
+      dirty: false,
+    };
+    $("gitFetchStatus").textContent = "";
+    renderAll();
+    loadCenterEditorFromSession();
+    if (centerCodeEditor && centerCodeEditor.editor) centerCodeEditor.editor.focus();
+  }
+
+  function switchCodeEditorStateHook(nextHookKind) {
+    const sess = state.codeEditorSession;
+    if (!sess || sess.mode !== "state-hook" || !centerCodeEditor) return;
+    const body = centerCodeEditor.getEditableBody();
+    if (sess.hookKind === "entry") sess.draftEntry = body;
+    else sess.draftExit = body;
+    sess.hookKind = nextHookKind === "exit" ? "exit" : "entry";
+    loadCenterEditorFromSession();
+    if (centerCodeEditor && centerCodeEditor.editor) centerCodeEditor.editor.focus();
+  }
+
+  function closeCodeEditorSession(rerender = true) {
+    const sess = state.codeEditorSession;
+    if (sess) {
+      if (sess.mode === "state-hook") state.dirtyStateIds.delete(sess.stateId);
+      else state.dirtyTransIds.delete(sess.transitionId);
+    }
+    state.codeEditorSession = null;
+    state.centerTab = "canvas";
+    $("codeEditorDirtyHint").textContent = "";
+    if (centerCodeEditor) centerCodeEditor.clearRustcMarkers();
+    if (rerender) renderAll();
+  }
+
+  function cancelCodeEditorSession() {
+    closeCodeEditorSession(true);
+    toast("Discarded unsaved editor changes", "ok");
+  }
+
+  async function saveCodeEditorSession(doGitCommit = false) {
+    const m = activeMachine();
+    const sess = state.codeEditorSession;
+    if (!m || !sess || !centerCodeEditor) return;
+
+    const currentBody = centerCodeEditor.getEditableBody();
+    const check = centerCodeEditor.runInstantAnalysis();
+    if (doGitCommit && check && check.stats.errors > 0) {
+      const proceed = window.confirm(
+        `Edit-time analyzer found ${check.stats.errors} error(s). Save & Push anyway?`,
+      );
+      if (!proceed) return;
+    }
+
+    if (sess.mode === "state-hook") {
+      const st = m.states.find((s) => s.id === sess.stateId);
+      if (!st) return;
+      if (sess.hookKind === "entry") sess.draftEntry = currentBody;
+      else sess.draftExit = currentBody;
+
+      const entryCode = sess.draftEntry;
+      const exitCode = sess.draftExit;
+      const updatedState = { ...st, entryCode, exitCode };
+      const composed = RustyContract.composeStateModuleRs(m, updatedState).code;
+      const deps = RustyAnalyzer.extractDependencies(`${entryCode}\n${exitCode}`, m);
+
+      bridge.updateStateHookAndCode(
+        st.id,
+        { entryCode, exitCode, codeCache: composed },
+        deps.memberIds,
+        RustyAnalyzer.serializeDepsSnapshot(deps.snapshot),
+        `Save ${st.name} (${sess.hookKind} hook & dependsOn)`,
+      );
+
+      sess.dirty = false;
+      state.dirtyStateIds.delete(st.id);
+
+      const eff = RustyContract.resolveStateGitLink(m, updatedState);
+      if (doGitCommit && eff.gitOwner && eff.gitRepo && state.gitStatus.hasGithubToken) {
+        const res = await commitStatesToGitHub([{ ...updatedState, code: composed }]);
+        if (res && res.conflict) {
+          syncCodeEditorHeaderButtons(true);
+          renderInspector();
+          return;
+        }
+        if (res && res.ok) {
+          closeCodeEditorSession(true);
+        }
+        return;
+      }
+
+      toast(`Saved ${st.name} hooks`, "ok");
+      closeCodeEditorSession(true);
+      return;
+    }
+
+    const tr = m.transitions.find((t) => t.id === sess.transitionId);
+    if (!tr) return;
+    const srcSt = m.states.find((s) => s.id === tr.srcId || s.name === tr.srcName);
+    sess.draftAction = currentBody;
+
+    const liveName = ($("inpTransName") && $("inpTransName").value.trim()) || tr.name;
+    const liveEvent = ($("inpTransEvent") && $("inpTransEvent").value.trim()) || tr.event;
+    const liveGuard = $("inpTransGuard") ? $("inpTransGuard").value.trim() : tr.guard || "";
+    const liveReenter = $("inpTransReenter") ? Boolean($("inpTransReenter").checked) : Boolean(tr.reenter);
+
+    const tempMachine = buildTempMachineWithTransitionOverride(m, tr, {
+      name: liveName,
+      event: liveEvent,
+      guard: liveGuard,
+      reenter: liveReenter,
+      action: currentBody,
     });
     const composedSrc = srcSt ? RustyContract.composeStateModuleRs(tempMachine, srcSt).code : "";
     const deps = RustyAnalyzer.extractDependencies("", m, {
       triggerEvent: liveEvent,
       guardText: liveGuard,
-      actionText: actionBody,
+      actionText: currentBody,
     });
 
     bridge.updateTransitionAndDeps(
       tr.id,
-      { name: liveName, event: liveEvent, guard: liveGuard, reenter: liveReenter, action: actionBody },
+      { name: liveName, event: liveEvent, guard: liveGuard, reenter: liveReenter, action: currentBody },
       deps.memberIds,
       RustyAnalyzer.serializeDepsSnapshot(deps.snapshot),
       `Save Transition ${liveName} action & dependsOn`,
       srcSt ? { stateId: srcSt.id, codeCache: composedSrc } : null,
     );
 
-    state.draftActionByTransId.delete(tr.id);
+    sess.dirty = false;
     state.dirtyTransIds.delete(tr.id);
-    state.transLoadedActionKey = null;
 
     const eff = srcSt ? RustyContract.resolveStateGitLink(tempMachine, srcSt) : null;
     if (doGitCommit && srcSt && eff && eff.gitOwner && eff.gitRepo && state.gitStatus.hasGithubToken) {
-      await commitStatesToGitHub([{ ...srcSt, code: composedSrc }]);
-    } else {
-      $("transActionDirtyHint").textContent = "Saved to WebGME";
-      toast(`Saved transition action (${liveName})`, "ok");
-      renderAll();
+      const res = await commitStatesToGitHub([{ ...srcSt, code: composedSrc }]);
+      if (res && res.conflict) {
+        syncCodeEditorHeaderButtons(true);
+        renderInspector();
+        return;
+      }
+      if (res && res.ok) {
+        closeCodeEditorSession(true);
+      }
+      return;
     }
+
+    toast(`Saved transition action (${liveName})`, "ok");
+    closeCodeEditorSession(true);
   }
 
   // ---- Pane Visibility & Collapsibles ----
@@ -584,8 +889,7 @@
       $("btnToggleRightPane").classList.toggle("is-collapsed", state.rightHidden);
       $("btnToggleRightPane").title = state.rightHidden ? "Show right Inspector panel" : "Hide right Inspector panel";
     }
-    if (monacoEditor) setTimeout(() => monacoEditor.layout(), 180);
-    if (transActionEditor) setTimeout(() => transActionEditor.layout(), 180);
+    if (centerCodeEditor) setTimeout(() => centerCodeEditor.layout(), 180);
   }
 
   function applySectionCollapseStates() {
@@ -604,53 +908,41 @@
     bindUIEvents();
     applySectionCollapseStates();
 
-    monacoEditor = new window.MonacoStateEditor($("monacoEditorHost"), {
+    centerCodeEditor = new window.MonacoStateEditor($("centerMonacoHost"), {
       onChange(bodyText) {
-        const st = selectedStateObj();
-        if (!st || state.stateHookTab === "transitions") return;
-        if (state.stateHookTab === "entry") state.draftEntryByStateId.set(st.id, bodyText);
-        else state.draftExitByStateId.set(st.id, bodyText);
-        state.dirtyStateIds.add(st.id);
-        $("codeDirtyHint").textContent = "Unsaved edits";
-        renderCanvas();
-      },
-      onDiagnostics(result) {
-        renderAnalyzerDiagnosticsFor("analyzerStatusBadge", "analyzerLatency", "editorProblemsList", monacoEditor, result);
-      },
-      onSaveShortcut() {
+        const sess = state.codeEditorSession;
         const m = activeMachine();
-        const st = selectedStateObj();
-        const eff = m && st ? RustyContract.resolveStateGitLink(m, st) : null;
-        const doPush = Boolean(eff && eff.gitOwner && eff.gitRepo && state.gitStatus.hasGithubToken);
-        saveOrCommitActiveStateHook(doPush);
-      },
-      onReadOnlyBlocked: notifyReadOnlyBlocked,
-    });
-
-    transActionEditor = new window.MonacoStateEditor($("transMonacoHost"), {
-      onChange(bodyText) {
-        const tr = selectedTransitionObj();
-        if (!tr) return;
-        state.draftActionByTransId.set(tr.id, bodyText);
-        state.dirtyTransIds.add(tr.id);
-        $("transActionDirtyHint").textContent = "Unsaved edits";
+        if (!sess || !m) return;
+        sess.dirty = true;
+        if (sess.mode === "state-hook") {
+          if (sess.hookKind === "entry") sess.draftEntry = bodyText;
+          else sess.draftExit = bodyText;
+          state.dirtyStateIds.add(sess.stateId);
+        } else {
+          sess.draftAction = bodyText;
+          state.dirtyTransIds.add(sess.transitionId);
+        }
+        $("codeEditorDirtyHint").textContent = "Unsaved edits";
+        renderCanvas();
+        renderMinimap();
       },
       onDiagnostics(result) {
         renderAnalyzerDiagnosticsFor(
-          "transActionBadge",
-          "transActionLatency",
-          "transActionProblemsList",
-          transActionEditor,
+          "codeEditorAnalyzerBadge",
+          "codeEditorAnalyzerLatency",
+          "codeEditorProblemsList",
+          centerCodeEditor,
           result,
         );
       },
       onSaveShortcut() {
+        const sess = state.codeEditorSession;
         const m = activeMachine();
-        const tr = selectedTransitionObj();
-        const srcSt = m && tr ? m.states.find((s) => s.id === tr.srcId || s.name === tr.srcName) : null;
-        const eff = m && srcSt ? RustyContract.resolveStateGitLink(m, srcSt) : null;
+        if (!sess || !m) return;
+        const st = m.states.find((s) => s.id === sess.stateId);
+        const eff = st ? RustyContract.resolveStateGitLink(m, st) : null;
         const doPush = Boolean(eff && eff.gitOwner && eff.gitRepo && state.gitStatus.hasGithubToken);
-        saveOrCommitTransitionAction(doPush);
+        saveCodeEditorSession(doPush);
       },
       onReadOnlyBlocked: notifyReadOnlyBlocked,
     });
@@ -697,18 +989,37 @@
     }
 
     // Load Monaco AMD after WebGME Socket.IO connects
-    await monacoEditor.init();
-    await transActionEditor.init();
+    await centerCodeEditor.init();
 
     bridge.onModelChange((machines) => {
       state.machines = machines;
       if (!state.activeMachineId || !machines.some((m) => m.id === state.activeMachineId)) {
         state.activeMachineId = machines[0] ? machines[0].id : null;
       }
-      state.editorLoadedHookKey = null;
-      state.transLoadedActionKey = null;
       rebuildSimulation(false);
       renderAll();
+      if (state.codeEditorSession && !state.codeEditorSession.dirty) {
+        const m = activeMachine();
+        const sess = state.codeEditorSession;
+        if (m && sess.mode === "state-hook") {
+          const st = m.states.find((s) => s.id === sess.stateId);
+          if (st) {
+            sess.draftEntry = st.entryCode || "";
+            sess.draftExit = st.exitCode || "";
+            loadCenterEditorFromSession();
+          } else {
+            closeCodeEditorSession(false);
+          }
+        } else if (m && sess.mode === "transition-action") {
+          const tr = m.transitions.find((t) => t.id === sess.transitionId);
+          if (tr) {
+            sess.draftAction = tr.action || "";
+            loadCenterEditorFromSession();
+          } else {
+            closeCodeEditorSession(false);
+          }
+        }
+      }
     });
 
     await loadProjectListAndOpen();
@@ -810,7 +1121,9 @@
     renderGitBar();
     renderImpactBanner();
     renderSidebar();
+    renderCenterMode();
     renderCanvas();
+    renderMinimap();
     renderInspector();
     renderCrateViewer();
     renderSimulator();
@@ -878,13 +1191,16 @@
   function renderSidebar() {
     const m = activeMachine();
     const stateList = $("stateList");
+    const transitionList = $("transitionList");
     const globalList = $("globalList");
     const eventList = $("eventList");
     stateList.innerHTML = "";
+    transitionList.innerHTML = "";
     globalList.innerHTML = "";
     eventList.innerHTML = "";
 
     $("countStates").textContent = m ? String(m.states.length) : "0";
+    $("countTransitions").textContent = m ? String((m.transitions || []).length) : "0";
     $("countGlobals").textContent = m ? String(m.globals.length) : "0";
     $("countEvents").textContent = m ? String(m.events.length) : "0";
     if (!m) return;
@@ -896,6 +1212,7 @@
       const li = document.createElement("li");
       const isSel = state.selectedType === "state" && state.selectedId === st.id;
       li.className = `item-row${isSel ? " selected" : ""}`;
+      li.title = "Click to inspect · Double-click to edit Rust hooks";
       const dotCls = state.dirtyStateIds.has(st.id)
         ? "dot-dirty"
         : st.gitBaseCommitSha
@@ -912,12 +1229,71 @@
           <span class="item-name">${escapeHtml(st.name)}</span>
         </div>
         ${impactBadge}
-        <span class="item-sub">${st.isInitial ? "INIT" : ""}</span>
+        <span class="item-sub">${st.isInitial ? "INIT" : st.isFinal ? "FINAL" : ""}</span>
       `;
       li.addEventListener("click", () => {
+        if (state.rightHidden) togglePane("right", false);
         selectStateForEditing(st.id);
       });
+      li.addEventListener("dblclick", () => {
+        openStateHookEditor(st.id, "entry");
+      });
       stateList.appendChild(li);
+    }
+
+    const evStyles = StateMachineCanvas.buildEventStyles(m.events);
+
+    // Transitions
+    for (const tr of m.transitions || []) {
+      const li = document.createElement("li");
+      const isSel = state.selectedType === "transition" && state.selectedId === tr.id;
+      li.className = `item-row${isSel ? " selected" : ""}`;
+      const isSelf = tr.srcId === tr.dstId || tr.srcName === tr.dstName;
+      const routeText = isSelf ? `${tr.srcName} ↺` : `${tr.srcName} → ${tr.dstName}`;
+      const styleInfo = evStyles.get(tr.event) || { glyph: "?", color: "#94a3b8", dash: "" };
+      const trImpact = imp && imp.byTransitionId ? imp.byTransitionId[tr.id] : null;
+      const impactBadge = trImpact
+        ? `<span class="impact-dot${trImpact.errors > 0 ? " err" : ""}" title="${escapeHtml(trImpact.reasons.map((r) => r.message).join("; "))}">⚠${trImpact.errors + trImpact.warnings}</span>`
+        : "";
+      const guardTxt = tr.guard && tr.guard.trim() ? `[${tr.guard.trim()}]` : (tr.name || "");
+      const subText = `${tr.event}${guardTxt ? ` · ${guardTxt}` : ""}`;
+
+      li.title = `${routeText} (${tr.event}) · Click to inspect · Double-click to edit action hook`;
+      li.innerHTML = `
+        <div class="trans-list-main">
+          <div class="trans-list-route">
+            <span class="event-glyph-pill" style="color:${styleInfo.color}">${escapeHtml(styleInfo.glyph)}</span>
+            <span class="item-name">${escapeHtml(routeText)}</span>
+          </div>
+          <span class="trans-list-sub">${escapeHtml(subText)}</span>
+        </div>
+        ${impactBadge}
+        <button class="btn btn-xs btn-edit-trans" title="Edit Action Hook in Central Editor">✎</button>
+        <button class="btn btn-xs btn-del-trans" title="Delete Transition">✕</button>
+      `;
+      li.addEventListener("click", () => {
+        if (state.rightHidden) togglePane("right", false);
+        selectTransitionForEditing(tr.id);
+      });
+      li.addEventListener("dblclick", () => {
+        openTransitionActionEditor(tr.id);
+      });
+      li.querySelector(".btn-edit-trans").addEventListener("click", (e) => {
+        e.stopPropagation();
+        openTransitionActionEditor(tr.id);
+      });
+      li.querySelector(".btn-del-trans").addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (state.codeEditorSession && state.codeEditorSession.transitionId === tr.id) {
+          closeCodeEditorSession(false);
+        }
+        bridge.deleteNode(tr.id, tr.name || tr.event);
+        if (state.selectedType === "transition" && state.selectedId === tr.id) {
+          state.selectedType = null;
+          state.selectedId = null;
+        }
+      });
+      transitionList.appendChild(li);
     }
 
     // Globals (with optional min/max bounds badge)
@@ -978,7 +1354,6 @@
     }
 
     // Events
-    const evStyles = StateMachineCanvas.buildEventStyles(m.events);
     const suggestions = $("eventNameSuggestions");
     suggestions.innerHTML = "";
     for (const ev of m.events) {
@@ -1046,11 +1421,66 @@
     }
   }
 
+  function renderPickModeBanner() {
+    const m = activeMachine();
+    const active = Boolean(state.connectMode && !state.codeEditorSession);
+    $("canvasHost").classList.toggle("pick-transition-mode", active);
+    $("pickModeBanner").classList.toggle("hidden", !active);
+    if (!active) return;
+
+    if (!state.connectSourceId) {
+      $("pickModeStepBadge").textContent = "STEP 1 / 2";
+      $("pickModeMessage").textContent = "Click the SOURCE state on the diagram";
+      $("btnPickModeBack").classList.add("hidden");
+    } else {
+      const srcSt = m && m.states.find((s) => s.id === state.connectSourceId);
+      $("pickModeStepBadge").textContent = "STEP 2 / 2";
+      $("pickModeMessage").textContent = `Source: ${srcSt ? srcSt.name : "?"} — Click TARGET state (or same state for self-transition)`;
+      $("btnPickModeBack").classList.remove("hidden");
+    }
+  }
+
+  function renderMinimap() {
+    const m = activeMachine();
+    const sess = state.codeEditorSession;
+    if (!m || !sess) return;
+
+    let label = "";
+    if (sess.mode === "state-hook") {
+      const st = m.states.find((s) => s.id === sess.stateId);
+      label = st ? `${st.name} :: on_${sess.hookKind}` : "";
+    } else {
+      const tr = m.transitions.find((t) => t.id === sess.transitionId);
+      label = tr ? `${tr.srcName} → ${tr.dstName}` : "";
+    }
+    $("minimapFocusLabel").textContent = label;
+
+    const snap = state.sim ? state.sim.getSnapshot() : null;
+    minimapCanvas.setState({
+      model: m,
+      minimap: true,
+      selectedType: null,
+      selectedId: null,
+      focusStateId: sess.stateId || null,
+      focusTransitionId: sess.mode === "transition-action" ? sess.transitionId : null,
+      connectMode: false,
+      connectSourceId: null,
+      simActiveStateName: snap ? snap.currentState : null,
+      simLastTransitionId: state.simLastTransitionId,
+      dirtyStateIds: state.dirtyStateIds,
+      layoutDirection: state.layoutDirection,
+      compactLabels: true,
+      highlightEventName: null,
+      impact: state.impact,
+    });
+  }
+
   function renderCanvas() {
     const m = activeMachine();
     const snap = state.sim ? state.sim.getSnapshot() : null;
     canvas.setState({
       model: m,
+      minimap: false,
       selectedType: state.selectedType,
       selectedId: state.selectedId,
       connectMode: state.connectMode,
@@ -1070,6 +1500,9 @@
     } else {
       $("simActiveBanner").classList.add("hidden");
     }
+
+    renderPickModeBanner();
+    renderMinimap();
   }
 
   function renderDependsOnChips(containerEl, memberIds, m) {
@@ -1119,13 +1552,24 @@
         .join("");
   }
 
+  function renderPreviewSnippet(preEl, body) {
+    const text = String(body || "").replace(/^\n+|\s+$/g, "");
+    if (!text) {
+      preEl.textContent = "// empty (click Edit to write Rust code)";
+      preEl.classList.add("empty");
+    } else {
+      preEl.textContent = text;
+      preEl.classList.remove("empty");
+    }
+  }
+
   function renderStateOutgoingTransitions(m, st) {
     const hooks = RustyContract.resolveStateTransitionHooks(m, st);
     $("stateTransCount").textContent = String(hooks.length);
     const list = $("stateOutgoingList");
     list.innerHTML = "";
     if (hooks.length === 0) {
-      list.innerHTML = `<div class="empty-state" style="padding:14px;">No outgoing transitions from <strong>${escapeHtml(st.name)}</strong>. Use <strong>⇢ Edge</strong> to add one.</div>`;
+      list.innerHTML = `<div class="empty-state" style="padding:14px;">No outgoing transitions from <strong>${escapeHtml(st.name)}</strong>. Click <strong>+ Transition</strong> to add one.</div>`;
       return;
     }
 
@@ -1140,6 +1584,7 @@
 
       const card = document.createElement("div");
       card.className = `outgoing-item${hasOverlap ? " overlap" : ""}`;
+      card.title = "Click to inspect · Double-click to edit action hook";
       const guardTxt = tr.guard && tr.guard.trim() ? `[${tr.guard.trim()}]` : "(unconditional)";
       const actionBadge = h.hasAction
         ? `<span class="dep-chip dep-global">${escapeHtml(h.fnName)}</span>`
@@ -1164,87 +1609,11 @@
       card.addEventListener("click", () => {
         selectTransitionForEditing(tr.id);
       });
+      card.addEventListener("dblclick", () => {
+        openTransitionActionEditor(tr.id);
+      });
       list.appendChild(card);
     }
-  }
-
-  function loadStateHookIntoMonaco(m, st) {
-    if (!monacoEditor || state.stateHookTab === "transitions") return;
-    const hookKind = state.stateHookTab === "exit" ? "exit" : "entry";
-    const loadKey = `${st.id}:${hookKind}`;
-
-    const liveEntry = getLiveStateHookBody(st, "entry");
-    const liveExit = getLiveStateHookBody(st, "exit");
-    const tempSt = { ...st, entryCode: liveEntry, exitCode: liveExit };
-    const composed = RustyContract.composeStateModuleRs(m, tempSt, {
-      editableHook: hookKind,
-    });
-    const span = composed.hooks[hookKind];
-    const snakeFile = `${RustyContract.toSnakeCase(st.name)}.rs`;
-
-    $("stateHookSubtitle").textContent = `${span.fnName}(...) in ${snakeFile} · surrounding lines read-only`;
-    monacoEditor.setContext(m, st, { kind: hookKind, payloadType: "" });
-
-    if (state.editorLoadedHookKey !== loadKey) {
-      state.editorLoadedHookKey = loadKey;
-      monacoEditor.setContextualFile({
-        code: composed.code,
-        editableStartLine: span.startLine,
-        editableEndLine: span.endLine,
-        hookContext: { kind: hookKind, payloadType: "" },
-        stateId: st.id,
-        reveal: true,
-      });
-    }
-    setTimeout(() => monacoEditor.layout(), 20);
-  }
-
-  function loadTransitionActionIntoMonaco(m, tr) {
-    if (!transActionEditor || state.transSubTab !== "action") return;
-    const srcSt = m.states.find((s) => s.id === tr.srcId || s.name === tr.srcName);
-    if (!srcSt) return;
-
-    const liveAction = getLiveTransitionAction(tr);
-    const liveName = $("inpTransName").value.trim() || tr.name;
-    const liveEvent = $("inpTransEvent").value.trim() || tr.event;
-    const liveGuard = $("inpTransGuard").value.trim();
-    const liveReenter = Boolean($("inpTransReenter").checked);
-
-    const tempMachine = buildTempMachineWithTransitionOverride(m, tr, {
-      name: liveName,
-      event: liveEvent,
-      guard: liveGuard,
-      reenter: liveReenter,
-      action: liveAction,
-    });
-
-    const trKey = RustyContract.transitionKey(tr);
-    const composed = RustyContract.composeStateModuleRs(tempMachine, srcSt, {
-      editableHook: "transition",
-      includeTransitionKey: trKey,
-    });
-    const span = composed.hooks.transitions[trKey];
-    if (!span) return;
-
-    const snakeFile = `${RustyContract.toSnakeCase(srcSt.name)}.rs`;
-    $("transActionSubtitle").textContent = `${span.fnName}(...) in ${snakeFile} · surrounding lines read-only`;
-
-    const hookCtx = { kind: "transition", payloadType: span.payloadType || "" };
-    transActionEditor.setContext(tempMachine, srcSt, hookCtx);
-
-    const loadKey = `${tr.id}:${liveName}:${liveEvent}:${liveGuard}:${liveReenter}`;
-    if (state.transLoadedActionKey !== loadKey) {
-      state.transLoadedActionKey = loadKey;
-      transActionEditor.setContextualFile({
-        code: composed.code,
-        editableStartLine: span.startLine,
-        editableEndLine: span.endLine,
-        hookContext: hookCtx,
-        stateId: srcSt.id,
-        reveal: true,
-      });
-    }
-    setTimeout(() => transActionEditor.layout(), 20);
   }
 
   function renderInspector() {
@@ -1262,7 +1631,6 @@
       const isConnected = Boolean(eff.gitOwner && eff.gitRepo);
       $("statePathHint").textContent = st.id;
       $("inpStateName").value = st.name;
-      $("inpStateColor").value = st.color || "#38bdf8";
       $("inpStateDesc").value = st.description || "";
       $("inpStateInitial").checked = Boolean(st.isInitial);
       $("inpStateFinal").checked = Boolean(st.isFinal);
@@ -1271,13 +1639,10 @@
         ? `${eff.gitOwner}/${eff.gitRepo}@${eff.gitBranch}:${eff.gitPath}`
         : eff.gitPath;
       $("stateShaDisplay").textContent = st.gitBaseCommitSha ? st.gitBaseCommitSha.slice(0, 12) : "none";
-
-      $("btnCommitState").classList.toggle("hidden", !isConnected);
       $("btnPullState").classList.toggle("hidden", !isConnected);
-      $("btnSaveCodeCache").textContent = isConnected ? "Save Local Draft" : "Save Hook (⌘S)";
 
       if (state.dirtyStateIds.has(st.id)) {
-        setBadge("stateSyncBadge", "Modified (unsynced)", "badge-warn");
+        setBadge("stateSyncBadge", "Editing (unsaved)", "badge-warn");
       } else if (st.gitBaseCommitSha) {
         setBadge("stateSyncBadge", "Synced with GitHub", "badge-ok");
       } else if (isConnected) {
@@ -1288,16 +1653,9 @@
 
       renderImpactBox($("stateImpactBox"), imp && imp.byStateId[st.id]);
       renderDependsOnChips($("stateDependsOnList"), st.dependsOn, m);
+      renderPreviewSnippet($("stateEntryPreview"), getLiveStateHookBody(st, "entry"));
+      renderPreviewSnippet($("stateExitPreview"), getLiveStateHookBody(st, "exit"));
       renderStateOutgoingTransitions(m, st);
-
-      document.querySelectorAll("[data-state-hook]").forEach((btn) => {
-        btn.classList.toggle("active", btn.dataset.stateHook === state.stateHookTab);
-      });
-      $("stateHookCodePane").classList.toggle("hidden", state.stateHookTab === "transitions");
-      $("stateTransitionsPane").classList.toggle("hidden", state.stateHookTab !== "transitions");
-
-      loadStateHookIntoMonaco(m, st);
-      $("codeDirtyHint").textContent = state.dirtyStateIds.has(st.id) ? "Unsaved edits" : "";
     }
 
     if (tr && m) {
@@ -1315,22 +1673,12 @@
       renderDependsOnChips($("transDependsOnList"), tr.dependsOn, m);
       renderGuardLivePanels(tr);
 
-      document.querySelectorAll("[data-trans-tab]").forEach((btn) => {
-        btn.classList.toggle("active", btn.dataset.transTab === state.transSubTab);
-      });
-      $("tabTransGuard").classList.toggle("hidden", state.transSubTab !== "guard");
-      $("tabTransAction").classList.toggle("hidden", state.transSubTab !== "action");
-
-      const srcSt = m.states.find((s) => s.id === tr.srcId || s.name === tr.srcName);
-      const eff = srcSt ? RustyContract.resolveStateGitLink(m, srcSt) : null;
-      const isConnected = Boolean(eff && eff.gitOwner && eff.gitRepo);
-      $("btnCommitTransAction").classList.toggle("hidden", !isConnected);
-      $("btnSaveTransAction").textContent = isConnected ? "Save Local Draft" : "Save Action (⌘S)";
-      $("transActionDirtyHint").textContent = state.dirtyTransIds.has(tr.id) ? "Unsaved edits" : "";
-
-      if (state.transSubTab === "action") {
-        loadTransitionActionIntoMonaco(m, tr);
-      }
+      const srcSibs = (m.transitions || []).filter(
+        (t) => t.srcId === tr.srcId || t.srcName === tr.srcName,
+      );
+      const fnName = RustyContract.resolveTransitionFnName(tr, srcSibs, tr.srcName);
+      $("transActionFnLabel").textContent = `fn ${fnName}(...)`;
+      renderPreviewSnippet($("transActionPreview"), getLiveTransitionAction(tr));
     }
   }
 
@@ -1556,7 +1904,6 @@
               tDeps.memberIds,
               RustyAnalyzer.serializeDepsSnapshot(tDeps.snapshot),
             );
-            state.draftActionByTransId.delete(tr.id);
             state.dirtyTransIds.delete(tr.id);
           }
         }
@@ -1564,10 +1911,27 @@
 
       state.fetchedStateIds.add(st.id);
       state.dirtyStateIds.delete(st.id);
-      state.draftEntryByStateId.delete(st.id);
-      state.draftExitByStateId.delete(st.id);
-      state.editorLoadedHookKey = null;
-      state.transLoadedActionKey = null;
+
+      const sess = state.codeEditorSession;
+      if (sess && !sess.dirty) {
+        if (sess.mode === "state-hook" && sess.stateId === st.id) {
+          sess.draftEntry = parsed.entryCode || "";
+          sess.draftExit = parsed.exitCode || "";
+          loadCenterEditorFromSession();
+        } else if (sess.mode === "transition-action" && sess.stateId === st.id) {
+          for (const h of hooks) {
+            if (
+              h.transition &&
+              h.transition.id === sess.transitionId &&
+              Object.prototype.hasOwnProperty.call(parsed.actionsByFnName, h.fnName)
+            ) {
+              sess.draftAction = parsed.actionsByFnName[h.fnName];
+              loadCenterEditorFromSession();
+              break;
+            }
+          }
+        }
+      }
 
       if (statusEl) statusEl.textContent = "Loaded from GitHub";
       toast(`Fetched ${eff.gitPath} from ${eff.gitOwner}/${eff.gitRepo}`, "ok");
@@ -1586,12 +1950,12 @@
     const m = activeMachine();
     if (!m || !statesToCommit.length) {
       toast("No states to commit", "warn");
-      return;
+      return { ok: false };
     }
     const firstEff = RustyContract.resolveStateGitLink(m, statesToCommit[0]);
     if (!firstEff.gitOwner || !firstEff.gitRepo) {
       toast("Connect a Git repository first (click 'Connect Git Repository…')", "warn");
-      return;
+      return { ok: false };
     }
 
     const changes = statesToCommit.map((st) => {
@@ -1627,7 +1991,7 @@
           states: statesToCommit,
           message,
         });
-        return;
+        return { ok: false, conflict: true };
       }
 
       bridge.runTransaction(`Sync gitBaseCommitSha (${res.newCommitSha.slice(0, 7)})`, () => {
@@ -1643,8 +2007,10 @@
         toast(`Committed ${changes.length} file(s) → ${res.newCommitSha.slice(0, 7)}`, "ok");
       }
       renderAll();
+      return { ok: true, newCommitSha: res.newCommitSha };
     } catch (err) {
       toast(`GitHub commit failed: ${err.message}`, "err");
+      return { ok: false };
     }
   }
 
@@ -1677,10 +2043,14 @@
         body: JSON.stringify({ model: m }),
       });
       const data = await res.json();
-      const activeSt = selectedStateObj();
-      if (monacoEditor && activeSt) {
-        const expectedPath = `src/states/${RustyContract.toSnakeCase(activeSt.name)}.rs`;
-        monacoEditor.setRustcMarkers(data.diagnostics || [], expectedPath);
+      const mFocus = activeMachine();
+      const sess = state.codeEditorSession;
+      if (centerCodeEditor && sess && mFocus) {
+        const focusSt = mFocus.states.find((s) => s.id === sess.stateId);
+        if (focusSt) {
+          const expectedPath = `src/states/${RustyContract.toSnakeCase(focusSt.name)}.rs`;
+          centerCodeEditor.setRustcMarkers(data.diagnostics || [], expectedPath);
+        }
       }
       if (data.ok) {
         $("diagTitle").textContent = `✓ cargo check passed (${data.durationMs}ms · ${data.fileCount} files)`;
@@ -1743,12 +2113,16 @@
     // Center tabs
     document.querySelectorAll("[data-center-tab]").forEach((btn) => {
       btn.addEventListener("click", () => {
-        document.querySelectorAll("[data-center-tab]").forEach((b) => b.classList.remove("active"));
-        btn.classList.add("active");
         const tab = btn.dataset.centerTab;
-        $("tabCanvas").classList.toggle("active", tab === "canvas");
-        $("tabCrate").classList.toggle("active", tab === "crate");
-        $("canvasToolbar").classList.toggle("hidden", tab !== "canvas");
+        if (state.codeEditorSession) {
+          if (!confirmDiscardCodeEditorIfDirty()) return;
+          closeCodeEditorSession(false);
+        }
+        state.centerTab = tab;
+        if (tab !== "canvas") {
+          cancelTransitionCreation();
+        }
+        renderCenterMode();
       });
     });
 
@@ -1763,22 +2137,41 @@
       });
     });
 
-    // State Hook Sub-Tabs (Entry / Exit / Transitions)
-    document.querySelectorAll("[data-state-hook]").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        state.stateHookTab = btn.dataset.stateHook;
-        state.editorLoadedHookKey = null;
-        renderInspector();
-      });
+    // Central Code Editor controls
+    document.querySelectorAll("[data-editor-hook]").forEach((btn) => {
+      btn.addEventListener("click", () => switchCodeEditorStateHook(btn.dataset.editorHook));
+    });
+    $("btnSaveCodeEditor").addEventListener("click", () => saveCodeEditorSession(false));
+    $("btnCommitCodeEditor").addEventListener("click", () => saveCodeEditorSession(true));
+    $("btnCancelCodeEditor").addEventListener("click", () => {
+      if (confirmDiscardCodeEditorIfDirty()) cancelCodeEditorSession();
+    });
+    $("btnPullCodeEditor").addEventListener("click", () => {
+      const m = activeMachine();
+      const sess = state.codeEditorSession;
+      const st = m && sess && m.states.find((s) => s.id === sess.stateId);
+      if (st) pullStateFromGitHub(st);
+    });
+    $("btnToggleMinimap").addEventListener("click", () => {
+      state.minimapCollapsed = !state.minimapCollapsed;
+      renderCenterMode();
+    });
+    $("btnMinimapReturn").addEventListener("click", () => {
+      if (confirmDiscardCodeEditorIfDirty()) closeCodeEditorSession(true);
     });
 
-    // Transition Sub-Tabs (Guard / Action)
-    document.querySelectorAll("[data-trans-tab]").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        state.transSubTab = btn.dataset.transTab;
-        state.transLoadedActionKey = null;
-        renderInspector();
-      });
+    // State & Transition Inspector "Edit Code" launch buttons
+    $("btnEditStateEntry").addEventListener("click", () => {
+      const st = selectedStateObj();
+      if (st) openStateHookEditor(st.id, "entry");
+    });
+    $("btnEditStateExit").addEventListener("click", () => {
+      const st = selectedStateObj();
+      if (st) openStateHookEditor(st.id, "exit");
+    });
+    $("btnEditTransAction").addEventListener("click", () => {
+      const tr = selectedTransitionObj();
+      if (tr) openTransitionActionEditor(tr.id);
     });
 
     // Side panel toggles & sidebar section collapse toggles
@@ -1795,13 +2188,22 @@
     });
 
     // Project & Machine switching
-    $("projectSelect").addEventListener("change", (e) => openSelectedProject(e.target.value));
+    $("projectSelect").addEventListener("change", (e) => {
+      closeCodeEditorSession(false);
+      cancelTransitionCreation();
+      openSelectedProject(e.target.value);
+    });
     $("machineSelect").addEventListener("change", (e) => {
+      if (state.codeEditorSession && !confirmDiscardCodeEditorIfDirty()) {
+        e.target.value = state.activeMachineId || "";
+        return;
+      }
+      closeCodeEditorSession(false);
+      state.connectMode = false;
+      state.connectSourceId = null;
       state.activeMachineId = e.target.value;
       state.selectedType = null;
       state.selectedId = null;
-      state.editorLoadedHookKey = null;
-      state.transLoadedActionKey = null;
       rebuildSimulation(true);
       renderAll();
     });
@@ -1852,13 +2254,6 @@
         fields: [
           { name: "name", label: "State Name (PascalCase)", value: `State${m.states.length + 1}` },
           { name: "description", label: "Description", placeholder: "What does this state do?", value: "" },
-          {
-            name: "color",
-            label: "Accent Color",
-            type: "select",
-            options: ["#38bdf8", "#22c55e", "#f97316", "#eab308", "#a855f7", "#ef4444"],
-            value: "#38bdf8",
-          },
         ],
         onConfirm(vals) {
           const name = (vals.name || "").trim();
@@ -1868,12 +2263,34 @@
             name,
             description: vals.description || "",
             isInitial: idx === 0,
-            color: vals.color || "#38bdf8",
             position: { x: 120 + (idx % 3) * 230, y: 100 + Math.floor(idx / 3) * 140 },
           });
           selectStateForEditing(id);
         },
       });
+    });
+
+    $("btnAddTransition").addEventListener("click", () => startTransitionCreation(null));
+    $("btnAddStateOutgoingTrans").addEventListener("click", () => {
+      const st = selectedStateObj();
+      startTransitionCreation(st ? st.id : null);
+    });
+    $("btnPickModeBack").addEventListener("click", () => {
+      state.connectSourceId = null;
+      renderCanvas();
+    });
+    $("btnPickModeForm").addEventListener("click", () => {
+      const srcId = state.connectSourceId;
+      state.connectMode = false;
+      state.connectSourceId = null;
+      renderCanvas();
+      openTransitionCreateModal(srcId, null);
+    });
+    $("btnPickModeCancel").addEventListener("click", cancelTransitionCreation);
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && state.connectMode && $("elementModal").classList.contains("hidden")) {
+        cancelTransitionCreation();
+      }
     });
 
     $("btnAddGlobal").addEventListener("click", () => {
@@ -1937,14 +2354,6 @@
     });
 
     // Canvas fixed-layout & badge controls
-    $("btnConnectMode").addEventListener("click", () => {
-      state.connectMode = !state.connectMode;
-      state.connectSourceId = null;
-      $("btnConnectMode").classList.toggle("btn-active", state.connectMode);
-      renderCanvas();
-      if (state.connectMode) toast("Click source state, then destination state", "ok");
-    });
-
     $("btnLayoutDir").addEventListener("click", () => {
       state.layoutDirection = state.layoutDirection === "LR" ? "TB" : "LR";
       $("btnLayoutDir").textContent = `⇄ ${state.layoutDirection}`;
@@ -1966,7 +2375,6 @@
         st.id,
         {
           name: $("inpStateName").value.trim() || st.name,
-          color: $("inpStateColor").value,
           description: $("inpStateDesc").value,
           isInitial: $("inpStateInitial").checked,
           isFinal: $("inpStateFinal").checked,
@@ -1976,24 +2384,13 @@
       toast(`Saved ${st.name} design attributes`, "ok");
     });
 
-    const toggleExpand = () => {
-      const ws = $("workspaceGrid");
-      const expanded = ws.classList.toggle("editor-expanded");
-      $("btnExpandEditor").textContent = expanded ? "⇒ Narrow" : "⇔ Wide";
-      $("btnExpandTransEditor").textContent = expanded ? "⇒ Narrow" : "⇔ Wide";
-      if (monacoEditor) setTimeout(() => monacoEditor.layout(), 180);
-      if (transActionEditor) setTimeout(() => transActionEditor.layout(), 180);
-    };
-    $("btnExpandEditor").addEventListener("click", toggleExpand);
-    $("btnExpandTransEditor").addEventListener("click", toggleExpand);
-
-    $("btnSaveCodeCache").addEventListener("click", () => saveOrCommitActiveStateHook(false));
-    $("btnCommitState").addEventListener("click", () => saveOrCommitActiveStateHook(true));
-
     $("btnDeleteState").addEventListener("click", () => {
       const st = selectedStateObj();
       if (!st) return;
       if (!window.confirm(`Delete state "${st.name}" from WebGME?`)) return;
+      if (state.codeEditorSession && state.codeEditorSession.stateId === st.id) {
+        closeCodeEditorSession(false);
+      }
       bridge.deleteNode(st.id, st.name);
       state.selectedType = null;
       state.selectedId = null;
@@ -2043,16 +2440,15 @@
         `Update Transition ${name} & dependsOn`,
         srcSt ? { stateId: srcSt.id, codeCache: recomposedSrc } : null,
       );
-      state.transLoadedActionKey = null;
       toast("Saved transition guard & metadata", "ok");
     });
-
-    $("btnSaveTransAction").addEventListener("click", () => saveOrCommitTransitionAction(false));
-    $("btnCommitTransAction").addEventListener("click", () => saveOrCommitTransitionAction(true));
 
     $("btnDeleteTransition").addEventListener("click", () => {
       const tr = selectedTransitionObj();
       if (!tr) return;
+      if (state.codeEditorSession && state.codeEditorSession.transitionId === tr.id) {
+        closeCodeEditorSession(false);
+      }
       bridge.deleteNode(tr.id, tr.name);
       state.selectedType = null;
       state.selectedId = null;
@@ -2178,6 +2574,9 @@
         $("conflictModal").classList.add("hidden");
         state.pendingConflict = null;
         toast(`Conflict resolved & committed → ${res.newCommitSha.slice(0, 7)}`, "ok");
+        if (state.codeEditorSession) {
+          closeCodeEditorSession(true);
+        }
       } catch (err) {
         toast(`Failed to commit resolution: ${err.message}`, "err");
       }
@@ -2332,12 +2731,10 @@
       state.selectedId = null;
       state.dirtyStateIds.clear();
       state.dirtyTransIds.clear();
-      state.draftEntryByStateId.clear();
-      state.draftExitByStateId.clear();
-      state.draftActionByTransId.clear();
       state.fetchedStateIds.clear();
-      state.editorLoadedHookKey = null;
-      state.transLoadedActionKey = null;
+      state.codeEditorSession = null;
+      state.connectMode = false;
+      state.connectSourceId = null;
       $("repoModal").classList.add("hidden");
       toast(
         `Connected & imported ${model.name} (${summary.states} states, ${summary.transitions} transitions)`,

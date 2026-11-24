@@ -76,6 +76,9 @@
       this.compactLabels = true;
       this.highlightEventName = null;
       this.impact = null;
+      this.minimap = false;
+      this.focusStateId = null;
+      this.focusTransitionId = null;
       this._eventStyles = new Map();
 
       this._bindCanvasEvents();
@@ -87,7 +90,7 @@
 
     _bindCanvasEvents() {
       this.svg.addEventListener("click", (e) => {
-        if (e.target === this.svg && this.handlers.onBackgroundClick) {
+        if (!this.minimap && e.target === this.svg && this.handlers.onBackgroundClick) {
           this.handlers.onBackgroundClick();
         }
       });
@@ -107,6 +110,9 @@
         "compactLabels",
         "highlightEventName",
         "impact",
+        "minimap",
+        "focusStateId",
+        "focusTransitionId",
       ];
       for (const k of keys) {
         if (next[k] !== undefined) this[k] = next[k];
@@ -145,7 +151,9 @@
       const statesById = new Map((this.model.states || []).map((s) => [s.id, s]));
       const transitions = this.model.transitions || [];
 
-      const transLayer = el("g", { class: "layer-transitions" });
+      const transLayer = el("g", {
+        class: !this.minimap && this.connectMode ? "layer-transitions connect-hidden" : "layer-transitions",
+      });
       for (const tr of transitions) {
         const src = statesById.get(tr.srcId);
         const dst = statesById.get(tr.dstId);
@@ -186,7 +194,12 @@
     }
 
     _renderTransition(tr, edgeGeom) {
-      const isSelected = this.selectedType === "transition" && this.selectedId === tr.id;
+      const isMinimapFocusTrans = Boolean(
+        this.minimap && this.focusTransitionId && this.focusTransitionId === tr.id,
+      );
+      const isSelected =
+        (!this.minimap && this.selectedType === "transition" && this.selectedId === tr.id) ||
+        isMinimapFocusTrans;
       const isFired =
         this.simLastTransitionId && (this.simLastTransitionId === tr.id || this.simLastTransitionId === tr.name);
 
@@ -204,19 +217,23 @@
       const isErrorImpact = Boolean(impactItem && impactItem.errors > 0);
 
       const isEventHighlight =
+        !this.minimap &&
         this.highlightEventName &&
         (this.highlightEventName === tr.event ||
           (global.RustyContract &&
             global.RustyContract.toPascalCase(this.highlightEventName) ===
               global.RustyContract.toPascalCase(tr.event)));
-      const isDimmed = Boolean(this.highlightEventName && !isEventHighlight);
+      const isDimmed = Boolean(!this.minimap && this.highlightEventName && !isEventHighlight);
+      const isMinimapDim = Boolean(this.minimap && !isMinimapFocusTrans);
 
       let cls = "trans-group";
       if (isSelected) cls += " selected";
+      if (isMinimapFocusTrans) cls += " minimap-focus-trans";
       if (isFired) cls += " sim-fired";
       if (isImpacted) cls += " impacted";
       if (isEventHighlight) cls += " event-highlighted";
       if (isDimmed) cls += " dimmed";
+      if (isMinimapDim) cls += " minimap-dim";
 
       const g = el("g", { class: cls });
 
@@ -331,23 +348,32 @@
         );
       }
 
-      const emitHover = (e) => {
-        if (this.handlers.onHoverTransition) {
-          this.handlers.onHoverTransition(tr, evStyle, impactItem, e);
-        }
-      };
-      g.addEventListener("mouseenter", emitHover);
-      g.addEventListener("mousemove", emitHover);
-      g.addEventListener("mouseleave", () => {
-        if (this.handlers.onHoverTransition) this.handlers.onHoverTransition(null);
-      });
+      if (!this.minimap) {
+        const emitHover = (e) => {
+          if (this.handlers.onHoverTransition) {
+            this.handlers.onHoverTransition(tr, evStyle, impactItem, e);
+          }
+        };
+        g.addEventListener("mouseenter", emitHover);
+        g.addEventListener("mousemove", emitHover);
+        g.addEventListener("mouseleave", () => {
+          if (this.handlers.onHoverTransition) this.handlers.onHoverTransition(null);
+        });
 
-      g.addEventListener("click", (e) => {
-        e.stopPropagation();
-        if (this.handlers.onSelectTransition) {
-          this.handlers.onSelectTransition(tr.id);
-        }
-      });
+        g.addEventListener("click", (e) => {
+          e.stopPropagation();
+          if (this.handlers.onSelectTransition) {
+            this.handlers.onSelectTransition(tr.id);
+          }
+        });
+
+        g.addEventListener("dblclick", (e) => {
+          e.stopPropagation();
+          if (!this.connectMode && this.handlers.onDoubleClickTransition) {
+            this.handlers.onDoubleClickTransition(tr.id);
+          }
+        });
+      }
 
       return g;
     }
@@ -355,31 +381,43 @@
     _renderState(st, box) {
       const w = box.width || BOX_W;
       const h = box.height || BOX_H;
-      const isSelected = this.selectedType === "state" && this.selectedId === st.id;
-      const isSimActive = this.simActiveStateName && this.simActiveStateName === st.name;
-      const isConnectSrc = this.connectMode && this.connectSourceId === st.id;
+      const isSelected = !this.minimap && this.selectedType === "state" && this.selectedId === st.id;
+      const isMinimapFocus = Boolean(this.minimap && this.focusStateId && this.focusStateId === st.id);
+      const isSimActive = Boolean(this.simActiveStateName && this.simActiveStateName === st.name);
+      const isConnectSrc = Boolean(!this.minimap && this.connectMode && this.connectSourceId === st.id);
       const isDirty = this.dirtyStateIds.has(st.id);
       const impactItem = this.impact && this.impact.byStateId ? this.impact.byStateId[st.id] : null;
       const isImpacted = Boolean(impactItem);
 
       let cls = "state-node";
       if (isSelected) cls += " selected";
+      if (isMinimapFocus) cls += " minimap-focused";
       if (isSimActive) cls += " sim-active";
       if (isImpacted) cls += " impacted";
+      if (!this.minimap && this.connectMode) {
+        cls += " pick-candidate";
+        if (isConnectSrc) cls += " pick-source";
+      }
 
       const g = el("g", {
         class: cls,
-        style: "cursor: pointer;",
+        style: this.minimap ? "pointer-events: none;" : "cursor: pointer;",
         transform: `translate(${box.x}, ${box.y})`,
       });
 
       const borderStroke = isConnectSrc
         ? "#f97316"
-        : isImpacted
-          ? impactItem.errors > 0
-            ? "#ef4444"
-            : "#f59e0b"
-          : st.color || "#38bdf8";
+        : isMinimapFocus
+          ? "#38bdf8"
+          : isSimActive
+            ? "#4ade80"
+            : isSelected
+              ? "#38bdf8"
+              : isImpacted
+                ? impactItem.errors > 0
+                  ? "#ef4444"
+                  : "#f59e0b"
+                : "#475569";
 
       g.appendChild(
         el("rect", {
@@ -392,23 +430,55 @@
         }),
       );
 
-      g.appendChild(
-        el("rect", {
-          x: 2,
-          y: 2,
-          width: 6,
-          height: h - 4,
-          rx: 4,
-          fill: st.color || "#38bdf8",
-        }),
-      );
+      if (st.isFinal) {
+        g.appendChild(
+          el("rect", {
+            x: 4,
+            y: 4,
+            width: w - 8,
+            height: h - 8,
+            rx: 7,
+            fill: "none",
+            stroke: "#64748b",
+            "stroke-width": 1,
+            "stroke-dasharray": "4 2",
+          }),
+        );
+      }
 
       // State title
-      const displayName = st.name.length > 16 ? st.name.slice(0, 15) + "…" : st.name;
-      g.appendChild(el("text", { x: 18, y: 26, class: "state-title" }, displayName));
+      const displayName = st.name.length > 17 ? st.name.slice(0, 16) + "…" : st.name;
+      g.appendChild(el("text", { x: 12, y: 26, class: "state-title" }, displayName));
 
-      // Init / Final tag
-      if (st.isInitial) {
+      // Picking SOURCE badge or Init / Final tag
+      if (isConnectSrc) {
+        g.appendChild(
+          el("rect", {
+            x: w - 62,
+            y: 6,
+            width: 54,
+            height: 16,
+            rx: 8,
+            fill: "#c2410c",
+            stroke: "#fb923c",
+            "stroke-width": 1.2,
+          }),
+        );
+        g.appendChild(
+          el(
+            "text",
+            {
+              x: w - 35,
+              y: 17.5,
+              "text-anchor": "middle",
+              "font-size": 9,
+              "font-weight": 700,
+              fill: "#ffffff",
+            },
+            "SOURCE",
+          ),
+        );
+      } else if (st.isInitial) {
         g.appendChild(el("text", { x: w - 12, y: 18, "text-anchor": "end", class: "state-init-tag" }, "INIT"));
       } else if (st.isFinal) {
         g.appendChild(
@@ -454,21 +524,30 @@
         ? global.RustyContract.resolveStateGitLink(this.model, st)
         : { gitPath: st.gitPath || `${st.name}.rs`, isOverridden: false };
       const syncColor = isDirty ? "#f59e0b" : st.gitBaseCommitSha ? "#22c55e" : "#64748b";
-      g.appendChild(el("circle", { cx: 22, cy: 48, r: 4, fill: syncColor }));
+      g.appendChild(el("circle", { cx: 16, cy: 48, r: 4, fill: syncColor }));
       const filePart = effective.gitPath.split("/").pop() || effective.gitPath;
       const suffix = effective.isOverridden ? " *" : "";
-      const maxLen = isImpacted ? 14 : 19;
+      const maxLen = isImpacted ? 15 : 20;
       const shownPath = filePart.length > maxLen ? filePart.slice(0, maxLen - 1) + "…" : filePart;
-      g.appendChild(el("text", { x: 32, y: 52, class: "state-path" }, `${shownPath}${suffix}`));
+      g.appendChild(el("text", { x: 26, y: 52, class: "state-path" }, `${shownPath}${suffix}`));
 
-      g.addEventListener("click", (e) => {
-        e.stopPropagation();
-        if (this.connectMode) {
-          if (this.handlers.onConnectClick) this.handlers.onConnectClick(st.id);
-          return;
-        }
-        if (this.handlers.onSelectState) this.handlers.onSelectState(st.id);
-      });
+      if (!this.minimap) {
+        g.addEventListener("click", (e) => {
+          e.stopPropagation();
+          if (this.connectMode) {
+            if (this.handlers.onConnectClick) this.handlers.onConnectClick(st.id);
+            return;
+          }
+          if (this.handlers.onSelectState) this.handlers.onSelectState(st.id);
+        });
+
+        g.addEventListener("dblclick", (e) => {
+          e.stopPropagation();
+          if (!this.connectMode && this.handlers.onDoubleClickState) {
+            this.handlers.onDoubleClickState(st.id);
+          }
+        });
+      }
 
       return g;
     }
