@@ -126,15 +126,20 @@ function initialize(middlewareOpts) {
   });
 
   router.post("/check", authMw, async (req, res) => {
+    const rawFiles =
+      req.body && req.body.files && typeof req.body.files === "object" && !Array.isArray(req.body.files)
+        ? req.body.files
+        : null;
     const model = req.body && req.body.model;
-    if (!model || !Array.isArray(model.states) || model.states.length === 0) {
-      res.status(400).json({ error: "Model must include at least one state" });
+    const hasFiles = Boolean(rawFiles && Object.keys(rawFiles).length > 0);
+    if (!hasFiles && (!model || !Array.isArray(model.states) || model.states.length === 0)) {
+      res.status(400).json({ error: "Provide either non-empty crate { files } or { model } with at least one state" });
       return;
     }
 
     let tmpDir = null;
     try {
-      const files = generateCrateFiles(model);
+      const files = hasFiles ? rawFiles : generateCrateFiles(model);
       tmpDir = writeCrateToTempDir(files);
       const result = await runExecFile("cargo", ["check", "--offline", "--message-format=json"], {
         cwd: tmpDir,
@@ -157,17 +162,22 @@ function initialize(middlewareOpts) {
   });
 
   router.post("/run", authMw, async (req, res) => {
+    const rawFiles =
+      req.body && req.body.files && typeof req.body.files === "object" && !Array.isArray(req.body.files)
+        ? req.body.files
+        : null;
     const model = req.body && req.body.model;
+    const hasFiles = Boolean(rawFiles && Object.keys(rawFiles).length > 0);
     const rawEvents = Array.isArray(req.body && req.body.events) ? req.body.events : [];
-    if (!model || !Array.isArray(model.states) || model.states.length === 0) {
-      res.status(400).json({ error: "Model must include at least one state" });
+    if (!hasFiles && (!model || !Array.isArray(model.states) || model.states.length === 0)) {
+      res.status(400).json({ error: "Provide either non-empty crate { files } or { model } with at least one state" });
       return;
     }
 
     const events = rawEvents.slice(0, 100).map(sanitizeEventArg).filter(Boolean);
     let tmpDir = null;
     try {
-      const files = generateCrateFiles(model);
+      const files = hasFiles ? rawFiles : generateCrateFiles(model);
       tmpDir = writeCrateToTempDir(files);
       const result = await runExecFile("cargo", ["run", "--offline", "--quiet", "--", ...events], {
         cwd: tmpDir,

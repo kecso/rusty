@@ -271,6 +271,7 @@ describe("Rusty E2E Layer 1 (OIDC) + Layer 2 (webgme-git) Server", { timeout: 30
     baseUrl = `http://127.0.0.1:${port}`;
 
     process.env.RUSTY_IGNORE_DOTENV = "true";
+    process.env.WEBGME_GIT_WORKSPACE_BACKEND = "memory";
     process.env.PORT = String(port);
     process.env.MONGO_URI = mongoUri;
     process.env.WEBGME_BASE_URL = baseUrl;

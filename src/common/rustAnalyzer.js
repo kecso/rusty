@@ -520,7 +520,12 @@
       if (!def) return;
       const key = def.id || `global:${def.snakeName}`;
       if (def.id) memberIdSet.add(def.id);
-      snapshot.globals[key] = { name: def.snakeName || def.name, rustType: def.rustType || "i32" };
+      snapshot.globals[key] = {
+        name: def.snakeName || def.name,
+        rustType: def.rustType || "i32",
+        minValue: def.minValue !== undefined && def.minValue !== null ? String(def.minValue) : "",
+        maxValue: def.maxValue !== undefined && def.maxValue !== null ? String(def.maxValue) : "",
+      };
     }
 
     function recordEvent(def) {
@@ -623,6 +628,17 @@
             severity: "warning",
             code: "DESIGN_TYPE_CHANGED",
             message: `Type of \`globals.${cur.snakeName}\` changed from \`${prev.rustType}\` to \`${cur.rustType}\` — review/recheck code`,
+          });
+        }
+        if (
+          (prev.minValue !== undefined || prev.maxValue !== undefined) &&
+          ((String(cur.minValue || "") !== String(prev.minValue || "")) ||
+            (String(cur.maxValue || "") !== String(prev.maxValue || "")))
+        ) {
+          reasons.push({
+            severity: "warning",
+            code: "DESIGN_BOUNDS_CHANGED",
+            message: `Domain bounds of \`globals.${cur.snakeName}\` changed — verify guard exclusivity and hook logic`,
           });
         }
       }
@@ -779,6 +795,58 @@
     };
   }
 
+  function replaceMaskedIdentifiers(source, regex, replacement) {
+    const src = String(source || "");
+    if (!src) return { code: src, replacements: 0 };
+    const masked = maskSource(src, true);
+    let out = "";
+    let lastIdx = 0;
+    let count = 0;
+    let m;
+    while ((m = regex.exec(masked)) !== null) {
+      const start = m.index + (m[1] ? m[1].length : 0);
+      const end = m.index + m[0].length;
+      out += src.slice(lastIdx, start) + replacement;
+      lastIdx = end;
+      count += 1;
+    }
+    if (count === 0) return { code: src, replacements: 0 };
+    out += src.slice(lastIdx);
+    return { code: out, replacements: count };
+  }
+
+  function escapeRegExp(s) {
+    return String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+
+  /**
+   * Token-safe rename of `globals.<oldSnake>` inside Rust hook code without touching
+   * comments or string literals.
+   */
+  function renameGlobalIdentifierInCode(code, oldSnakeName, newSnakeName) {
+    const oldClean = toSnakeCase(oldSnakeName);
+    const newClean = toSnakeCase(newSnakeName);
+    if (!oldClean || !newClean || oldClean === newClean) {
+      return { code: String(code || ""), replacements: 0 };
+    }
+    const re = new RegExp(`(\\bglobals\\.)${escapeRegExp(oldClean)}\\b`, "g");
+    return replaceMaskedIdentifiers(code, re, newClean);
+  }
+
+  /**
+   * Token-safe rename of `<oldSnake>` inside pure guard expressions.
+   */
+  function renameGlobalIdentifierInGuard(guardExpr, oldSnakeName, newSnakeName) {
+    const oldClean = toSnakeCase(oldSnakeName);
+    const newClean = toSnakeCase(newSnakeName);
+    if (!oldClean || !newClean || oldClean === newClean) {
+      return { guard: String(guardExpr || ""), replacements: 0 };
+    }
+    const re = new RegExp(`()\\b${escapeRegExp(oldClean)}\\b`, "g");
+    const res = replaceMaskedIdentifiers(guardExpr, re, newClean);
+    return { guard: res.code, replacements: res.replacements };
+  }
+
   return {
     analyzeHookBody,
     analyzeStateCode,
@@ -787,5 +855,7 @@
     serializeDepsSnapshot,
     parseDepsSnapshot,
     computeDesignImpact,
+    renameGlobalIdentifierInCode,
+    renameGlobalIdentifierInGuard,
   };
 });

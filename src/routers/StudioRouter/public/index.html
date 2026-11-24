@@ -62,17 +62,19 @@
       </div>
     </header>
 
-    <!-- GitHub Repo Binding Bar -->
+    <!-- Hybrid Git Workspace & Repo Binding Bar -->
     <div class="gitbar">
       <div class="gitbar-left">
-        <span class="gitbar-label">Git Repository:</span>
-        <code id="machineRepoDisplay" class="repo-pill repo-local">Not connected (local draft)</code>
-        <button id="btnConnectRepo" class="btn btn-xs btn-primary" title="One-time setup: connect this machine to a GitHub repository directory (or import an existing Rust machine)">Connect Git Repository…</button>
+        <span class="gitbar-label">Git Workspace:</span>
+        <code id="machineRepoDisplay" class="repo-pill repo-local">Hybrid Local Workspace</code>
+        <button id="workspaceStatusPill" class="badge badge-muted ws-status-pill" type="button" title="Review uncommitted workspace deltas &amp; remote sync status">● 0 pending</button>
+        <button id="btnConnectRepo" class="btn btn-xs btn-primary" title="Connect and pin this machine to a GitHub repository commit (no branch lock-in)">Connect Git Repository…</button>
         <button id="btnPullAll" class="btn btn-xs hidden" title="Pull latest state .rs files from GitHub">↓ Pull States</button>
       </div>
       <div class="gitbar-right">
-        <button id="btnRustCheck" class="btn btn-xs btn-success" title="Run cargo check via /routers/rustsim">✓ Verify with rustc</button>
-        <button id="btnPushCrate" class="btn btn-xs hidden" title="Commit complete standalone Cargo crate to GitHub">Push Full Crate</button>
+        <button id="btnDownloadZip" class="btn btn-xs" title="Collect and download all artifacts in this project as a structured ZIP archive">↓ Download .zip</button>
+        <button id="btnRustCheck" class="btn btn-xs btn-success" title="Run cargo check via /routers/rustsim against the live workspace">✓ Verify with rustc</button>
+        <button id="btnPushCrate" class="btn btn-xs btn-accent hidden" title="Review staged workspace changes, validate, and push one atomic commit to GitHub">↑ Commit &amp; Push</button>
         <span id="rustcBadge" class="badge badge-muted">rustc: …</span>
       </div>
     </div>
@@ -192,8 +194,7 @@
             <div class="btn-row center-editor-actions">
               <span id="codeEditorDirtyHint" class="muted-mono"></span>
               <button id="btnCancelCodeEditor" class="btn btn-sm">Cancel</button>
-              <button id="btnSaveCodeEditor" class="btn btn-sm btn-primary">Save</button>
-              <button id="btnCommitCodeEditor" class="btn btn-sm btn-accent hidden" title="Save hook + atomic Commit & Push composed .rs file to GitHub (Cmd/Ctrl+S)">↑ Save &amp; Push (⌘S)</button>
+              <button id="btnSaveCodeEditor" class="btn btn-sm btn-primary" title="Save hook into WebGME + stage in Git Workspace (Cmd/Ctrl+S)">Save to Workspace (⌘S)</button>
             </div>
           </div>
 
@@ -571,6 +572,55 @@
         <button id="btnUseUpstream" class="btn btn-sm">Take Upstream</button>
         <button id="btnUseLocal" class="btn btn-sm">Keep Local</button>
         <button id="btnResolveConflictCommit" class="btn btn-sm btn-primary">Commit Resolution</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Review, Validate & Atomic Push Workspace Commit -->
+  <div id="commitModal" class="modal-backdrop hidden">
+    <div class="modal-card modal-wide">
+      <div class="modal-header">
+        <h3>Review &amp; Push Workspace Commit</h3>
+        <button class="btn btn-xs" data-close-modal="commitModal">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-grid">
+          <label>
+            <span>Repository &amp; Pinned Base Commit</span>
+            <input id="commitRepoSummary" type="text" readonly />
+          </label>
+          <label>
+            <span>Push Target Branch (no branch alignment required)</span>
+            <input id="commitTargetBranch" type="text" value="main" list="commitBranchSuggestions" />
+            <datalist id="commitBranchSuggestions"></datalist>
+          </label>
+        </div>
+        <label class="checkbox-row">
+          <input id="chkCreateTargetBranch" type="checkbox" />
+          <span>Create target branch from pinned commit if it does not exist on GitHub yet</span>
+        </label>
+        <label class="form-row">
+          <span>Commit Message</span>
+          <input id="commitMessageInput" type="text" placeholder="Describe this semantic change..." />
+        </label>
+        <div id="commitValidationBox" class="commit-validation-box">Checking crate validation…</div>
+        <div class="commit-review-grid">
+          <div>
+            <div class="conflict-col-title">Staged Changes (<span id="commitChangeCount">0</span>)</div>
+            <ul id="commitFilesList" class="commit-files-list"></ul>
+          </div>
+          <div>
+            <div class="conflict-col-title">Preview: <code id="commitDiffPath">-</code></div>
+            <pre id="commitDiffPreview" class="conflict-pre" style="min-height: 190px; max-height: 260px;"></pre>
+          </div>
+        </div>
+        <div id="commitModalStatus" class="muted-mono"></div>
+      </div>
+      <div class="modal-footer">
+        <button id="btnDiscardWorkspace" class="btn btn-sm btn-danger modal-secondary-btn" title="Discard all uncommitted workspace deltas and revert to pinned base commit">Discard Unpushed</button>
+        <button class="btn btn-sm" data-close-modal="commitModal">Cancel</button>
+        <button id="btnForceCommitWorkspace" class="btn btn-sm btn-danger hidden" title="Override validation errors and push anyway">⚠ Force Push Anyway</button>
+        <button id="btnConfirmCommitWorkspace" class="btn btn-sm btn-primary">↑ Commit &amp; Push</button>
       </div>
     </div>
   </div>

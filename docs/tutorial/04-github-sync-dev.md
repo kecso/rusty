@@ -58,11 +58,12 @@ Restart `npm start`.
    - Choose **Connect current design** and click **Connect Repository**.
 5. Once connected, the Git Repository bar displays your read-only repository target (`<your-username>/rusty@dev · examples/smart-thermostat`), and every State inspector resolves directly to `<dir>/src/states/<state>.rs`.
 
-## 4. Edit-Fetch-Commit-Push (`⌘S`), Auto-Rebase & HTTP 409
+## 4. Commit-Pinned Hybrid Workspace, Review & Validation Gate (`Commit & Push`)
 
-- **Auto-Fetch**: Opening a State fetches its live `.rs` file from GitHub into Monaco. Because files live in standard Git paths, you can also edit them directly in VS Code, Neovim, or CI outside the web UI.
-- **Continuous Save & Push (`⌘S`)**: Pressing **`⌘S`** (or clicking **`↑ Save & Push`**) updates WebGME's `codeCache` + `dependsOn` Set and commits atomically to `<your-username>/rusty@dev` via Octokit.
-- **Transparent Auto-Rebase vs. HTTP 409**: Commits to another file rebase automatically; conflicting edits on the same file open Rusty Studio's **3-Way Merge Conflict** modal.
+- **Always-On Hybrid Workspace**: Even before linking GitHub, Rusty maintains an active artifact tree inside `webgme-git`'s workspace overlay (and lets you click **`↓ Download .zip`** anytime to export all project artifacts in `<owner>/<repo>/<path>` layout).
+- **Automatic Model → Artifact Staging**: Renaming/deleting states, updating transitions, adding globals/events, or pressing **`⌘S` (`Save to Workspace`)** updates the workspace overlay immediately without polluting Git history with micro-commits.
+- **Review & Pre-Push Validation Gate (`↑ Commit & Push`)**: Click **`↑ Commit & Push`** (or the pending counter pill) to inspect staged additions/renames/deletions, choose any target branch (no branch alignment required — links pin immutable commit SHAs), and run design + `cargo check` validation. Blocking errors prevent accidental broken pushes by default while allowing an explicit **`Force Push Anyway`** override.
+- **Transparent Auto-Rebase vs. HTTP 409**: Disjoint upstream commits rebase automatically; conflicting edits on the same file open Rusty Studio's **3-Way Merge Conflict** modal.
 
 ## 5. Import an Existing Rust Machine During Initial Connection
 

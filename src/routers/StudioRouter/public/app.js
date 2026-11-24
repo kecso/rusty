@@ -48,6 +48,13 @@
     elementModalConfirm: null,
     pendingTransitionDraft: null,
     lastReadOnlyToastAt: 0,
+    // Hybrid commit-pinned Git workspace state
+    workspaceStatus: null,
+    workspaceStatusByMachineId: new Map(),
+    syncedMachineKeys: new Set(),
+    workspaceQueue: Promise.resolve(),
+    commitReviewStatus: null,
+    commitValidationErrors: [],
   };
 
   const $ = (id) => document.getElementById(id);
@@ -335,6 +342,8 @@
         );
         toast(`Created ${isSelf ? "self-transition" : "transition"} ${srcSt.name} → ${dstSt.name} (${eventName})`, "ok");
         selectTransitionForEditing(tid);
+        const nextM = activeMachine();
+        if (nextM) syncMachineArtifactsToWorkspace(nextM);
       },
     });
   }
@@ -593,9 +602,8 @@
     const sess = state.codeEditorSession;
     if (!sess) return;
     const showGit = Boolean(isConnected);
-    $("btnCommitCodeEditor").classList.toggle("hidden", !showGit);
     $("btnPullCodeEditor").classList.toggle("hidden", !(showGit && sess.mode === "state-hook"));
-    $("btnSaveCodeEditor").textContent = showGit ? "Save Draft" : "Save";
+    $("btnSaveCodeEditor").textContent = "Save to Workspace (⌘S)";
     $("codeEditorDirtyHint").textContent = sess.dirty ? "Unsaved edits" : "";
   }
 
@@ -849,22 +857,10 @@
 
       sess.dirty = false;
       state.dirtyStateIds.delete(st.id);
+      const nextM = activeMachine();
+      if (nextM) syncMachineArtifactsToWorkspace(nextM);
 
-      const eff = RustyContract.resolveStateGitLink(m, updatedState);
-      if (doGitCommit && eff.gitOwner && eff.gitRepo && state.gitStatus.hasGithubToken) {
-        const res = await commitStatesToGitHub([{ ...updatedState, code: composed }]);
-        if (res && res.conflict) {
-          syncCodeEditorHeaderButtons(true);
-          renderInspector();
-          return;
-        }
-        if (res && res.ok) {
-          closeCodeEditorSession(true);
-        }
-        return;
-      }
-
-      toast(`Saved ${st.name} hooks`, "ok");
+      toast(`Saved ${st.name} hooks to workspace`, "ok");
       closeCodeEditorSession(true);
       return;
     }
@@ -904,22 +900,10 @@
 
     sess.dirty = false;
     state.dirtyTransIds.delete(tr.id);
+    const nextM = activeMachine();
+    if (nextM) syncMachineArtifactsToWorkspace(nextM);
 
-    const eff = srcSt ? RustyContract.resolveStateGitLink(tempMachine, srcSt) : null;
-    if (doGitCommit && srcSt && eff && eff.gitOwner && eff.gitRepo && state.gitStatus.hasGithubToken) {
-      const res = await commitStatesToGitHub([{ ...srcSt, code: composedSrc }]);
-      if (res && res.conflict) {
-        syncCodeEditorHeaderButtons(true);
-        renderInspector();
-        return;
-      }
-      if (res && res.ok) {
-        closeCodeEditorSession(true);
-      }
-      return;
-    }
-
-    toast(`Saved transition action (${liveName})`, "ok");
+    toast(`Saved transition action (${liveName}) to workspace`, "ok");
     closeCodeEditorSession(true);
   }
 
@@ -984,13 +968,8 @@
         );
       },
       onSaveShortcut() {
-        const sess = state.codeEditorSession;
-        const m = activeMachine();
-        if (!sess || !m) return;
-        const st = m.states.find((s) => s.id === sess.stateId);
-        const eff = st ? RustyContract.resolveStateGitLink(m, st) : null;
-        const doPush = Boolean(eff && eff.gitOwner && eff.gitRepo && state.gitStatus.hasGithubToken);
-        saveCodeEditorSession(doPush);
+        if (!state.codeEditorSession || !activeMachine()) return;
+        saveCodeEditorSession(false);
       },
       onReadOnlyBlocked: notifyReadOnlyBlocked,
     });
@@ -1046,6 +1025,8 @@
       }
       rebuildSimulation(false);
       renderAll();
+      const curM = activeMachine();
+      if (curM) ensureMachineWorkspaceReady(curM);
       if (state.codeEditorSession && !state.codeEditorSession.dirty) {
         const m = activeMachine();
         const sess = state.codeEditorSession;
@@ -1225,22 +1206,198 @@
     }
   }
 
+  // ---- Hybrid Commit-Pinned Git Workspace Helpers ----
+
+  function workspaceParamsForMachine(m) {
+    if (!m) return null;
+    const isGithub = Boolean(m.gitOwner && m.gitRepo);
+    if (isGithub) {
+      return {
+        mode: "github",
+        projectId: bridge.projectId || "default",
+        webgmeBranch: bridge.branchName || "master",
+        owner: m.gitOwner,
+        repo: m.gitRepo,
+        rootPath: RustyContract.resolveMachineCrateRoot(m),
+        baseCommitSha: m.gitBaseCommitSha || "",
+        targetBranch: m.gitBranch || "main",
+      };
+    }
+    return {
+      mode: "local",
+      projectId: bridge.projectId || "default",
+      webgmeBranch: bridge.branchName || "master",
+      owner: "local",
+      repo: RustyContract.toCrateName(m.crateName || m.name),
+      rootPath: "",
+    };
+  }
+
+  function workspaceKeyTag(params) {
+    if (!params) return "";
+    return `${params.projectId}::${params.webgmeBranch}::${params.mode}::${params.owner}/${params.repo}::${params.rootPath || ""}`;
+  }
+
+  function enqueueWorkspaceTask(taskFn) {
+    state.workspaceQueue = state.workspaceQueue.then(taskFn, taskFn);
+    return state.workspaceQueue;
+  }
+
+  function renderWorkspaceStatusPill() {
+    const pill = $("workspaceStatusPill");
+    if (!pill) return;
+    const m = activeMachine();
+    if (!m) {
+      pill.textContent = "● 0 pending";
+      pill.className = "badge badge-muted ws-status-pill";
+      return;
+    }
+    const ws = state.workspaceStatusByMachineId.get(m.id) || state.workspaceStatus;
+    const count = ws && typeof ws.dirtyCount === "number" ? ws.dirtyCount : 0;
+    const isGithub = Boolean(m.gitOwner && m.gitRepo);
+
+    if (!isGithub) {
+      pill.textContent = `Hybrid Store (${count || "ready"})`;
+      pill.className = "badge badge-ok ws-status-pill";
+      return;
+    }
+
+    const syncState = (ws && ws.syncState) || (count > 0 ? "dirty" : "clean");
+    if (syncState === "diverged") {
+      pill.textContent = `⚠ ${count} pending · upstream moved`;
+      pill.className = "badge badge-err ws-status-pill";
+    } else if (syncState === "behind") {
+      pill.textContent = "↓ Upstream ahead";
+      pill.className = "badge badge-warn ws-status-pill";
+    } else if (count > 0) {
+      pill.textContent = `● ${count} pending push`;
+      pill.className = "badge badge-warn ws-status-pill";
+    } else {
+      pill.textContent = "✓ Clean vs pin";
+      pill.className = "badge badge-ok ws-status-pill";
+    }
+  }
+
+  async function refreshWorkspaceStatus(m, checkRemote = false) {
+    const params = workspaceParamsForMachine(m);
+    if (!params) return null;
+    try {
+      const status = await gitClient.getWorkspaceStatus(params, {
+        checkRemote: Boolean(checkRemote && params.mode === "github" && state.gitStatus.hasGithubToken),
+        includeDiff: false,
+      });
+      state.workspaceStatusByMachineId.set(m.id, status);
+      if (activeMachine() && activeMachine().id === m.id) {
+        state.workspaceStatus = status;
+        renderWorkspaceStatusPill();
+      }
+      return status;
+    } catch (_err) {
+      return null;
+    }
+  }
+
+  function syncMachineArtifactsToWorkspace(machine, extraOps = []) {
+    const params = workspaceParamsForMachine(machine);
+    if (!params) return Promise.resolve(null);
+    const keyTag = workspaceKeyTag(params);
+
+    const crateFiles = RustyCodegen.generateCrateFiles(machine);
+    const excludedPaths = new Set();
+    for (const op of extraOps || []) {
+      if (op.op === "delete" && op.path) excludedPaths.add(op.path);
+      if (op.op === "rename" && op.from) excludedPaths.add(op.from);
+    }
+
+    const ops = [];
+    for (const op of extraOps || []) {
+      if (op.op === "rename" || op.op === "delete") ops.push(op);
+    }
+    for (const [relPath, content] of Object.entries(crateFiles)) {
+      const fullPath = RustyContract.resolveCrateFilePath(machine, relPath);
+      if (excludedPaths.has(fullPath)) continue;
+      ops.push({ op: "write", path: fullPath, content, mode: "100644" });
+    }
+    for (const op of extraOps || []) {
+      if (op.op === "write") ops.push(op);
+    }
+    if (ops.length === 0) return Promise.resolve(null);
+
+    return enqueueWorkspaceTask(async () => {
+      try {
+        await gitClient.patchWorkspaceOps(params, ops);
+        state.syncedMachineKeys.add(keyTag);
+        return await refreshWorkspaceStatus(machine, false);
+      } catch (_err) {
+        return null;
+      }
+    });
+  }
+
+  function ensureMachineWorkspaceReady(machine) {
+    const params = workspaceParamsForMachine(machine);
+    if (!params) return Promise.resolve(null);
+    const keyTag = workspaceKeyTag(params);
+    if (state.syncedMachineKeys.has(keyTag)) {
+      return Promise.resolve(state.workspaceStatusByMachineId.get(machine.id) || null);
+    }
+    state.syncedMachineKeys.add(keyTag);
+
+    if (params.mode === "github" && params.baseCommitSha) {
+      return enqueueWorkspaceTask(() => refreshWorkspaceStatus(machine, true));
+    }
+    return syncMachineArtifactsToWorkspace(machine);
+  }
+
+  async function readVirtualCrateFilesForCheck(machine) {
+    await state.workspaceQueue.catch(() => {});
+    const params = workspaceParamsForMachine(machine);
+    if (!params) return RustyCodegen.generateCrateFiles(machine);
+    try {
+      const tree = await gitClient.getWorkspaceTree(params, params.rootPath);
+      const prefix = params.rootPath ? `${params.rootPath.replace(/\/+$/, "")}/` : "";
+      const targetEntries = (tree.entries || []).filter((e) => {
+        const rel = prefix && e.path.startsWith(prefix) ? e.path.slice(prefix.length) : e.path;
+        return rel === "Cargo.toml" || (rel.startsWith("src/") && rel.endsWith(".rs"));
+      });
+      if (targetEntries.length === 0) {
+        return RustyCodegen.generateCrateFiles(machine);
+      }
+      const files = {};
+      await Promise.all(
+        targetEntries.map(async (entry) => {
+          const f = await gitClient.readWorkspaceFile(params, entry.path);
+          const rel = prefix && entry.path.startsWith(prefix) ? entry.path.slice(prefix.length) : entry.path;
+          files[rel] = f.content;
+        }),
+      );
+      return Object.keys(files).length > 0 ? files : RustyCodegen.generateCrateFiles(machine);
+    } catch (_err) {
+      return RustyCodegen.generateCrateFiles(machine);
+    }
+  }
+
   function renderGitBar() {
     const m = activeMachine();
     const isConnected = Boolean(m && m.gitOwner && m.gitRepo);
     if (!isConnected) {
-      $("machineRepoDisplay").textContent = "Not connected (local draft)";
+      const crateSlug = m ? RustyContract.toCrateName(m.crateName || m.name) : "workspace";
+      $("machineRepoDisplay").textContent = `Hybrid Local Store: local/${crateSlug}`;
       $("machineRepoDisplay").className = "repo-pill repo-local";
       $("btnConnectRepo").classList.toggle("hidden", !m);
       $("btnPullAll").classList.add("hidden");
       $("btnPushCrate").classList.add("hidden");
     } else {
-      $("machineRepoDisplay").textContent = `${m.gitOwner}/${m.gitRepo}@${m.gitBranch || "main"} · ${m.gitPath || "src/states"}`;
+      const shortSha = m.gitBaseCommitSha ? ` @ ${m.gitBaseCommitSha.slice(0, 7)}` : " @ HEAD";
+      const rootDir = RustyContract.resolveMachineCrateRoot(m) || "repo root";
+      $("machineRepoDisplay").textContent = `${m.gitOwner}/${m.gitRepo}${shortSha} → ${m.gitBranch || "main"} · ${rootDir}`;
       $("machineRepoDisplay").className = "repo-pill repo-connected";
       $("btnConnectRepo").classList.add("hidden");
       $("btnPullAll").classList.remove("hidden");
       $("btnPushCrate").classList.remove("hidden");
     }
+    $("btnDownloadZip").disabled = !m;
+    renderWorkspaceStatusPill();
   }
 
   function renderImpactBanner() {
@@ -1368,14 +1525,7 @@
       });
       li.querySelector(".btn-del-trans").addEventListener("click", (e) => {
         e.stopPropagation();
-        if (state.codeEditorSession && state.codeEditorSession.transitionId === tr.id) {
-          closeCodeEditorSession(false);
-        }
-        bridge.deleteNode(tr.id, tr.name || tr.event);
-        if (state.selectedType === "transition" && state.selectedId === tr.id) {
-          state.selectedType = null;
-          state.selectedId = null;
-        }
+        deleteTransitionWithConfirm(tr);
       });
       transitionList.appendChild(li);
     }
@@ -1393,7 +1543,7 @@
           <span class="item-name">${escapeHtml(g.name)}</span>
           <span class="item-sub">${escapeHtml(g.rustType)} = ${escapeHtml(g.initialValue)}${escapeHtml(boundsStr)}</span>
         </div>
-        <button class="btn btn-xs btn-edit-global" title="Edit GlobalVar & Bounds">✎</button>
+        <button class="btn btn-xs btn-edit-global" title="Edit GlobalVar &amp; Bounds">✎</button>
         <button class="btn btn-xs btn-del-global" title="Delete GlobalVar">✕</button>
       `;
       li.querySelector(".btn-edit-global").addEventListener("click", (e) => {
@@ -1415,10 +1565,13 @@
             { name: "maxValue", label: "Max Domain Bound (optional — for guard proof)", placeholder: "e.g. 100.0", value: g.maxValue || "" },
           ],
           onConfirm(vals) {
+            const nextName = vals.name.trim() || g.name;
+            const oldSnake = RustyContract.toSnakeCase(g.name);
+            const newSnake = RustyContract.toSnakeCase(nextName);
             bridge.updateNodeAttributes(
               g.id,
               {
-                name: vals.name.trim() || g.name,
+                name: nextName,
                 rustType: vals.rustType,
                 initialValue: vals.initialValue.trim(),
                 minValue: (vals.minValue || "").trim(),
@@ -1426,13 +1579,21 @@
               },
               `Update GlobalVar ${g.name}`,
             );
-            toast(`Updated global ${vals.name.trim() || g.name}`, "ok");
+
+            if (oldSnake && newSnake && oldSnake !== newSnake) {
+              offerGlobalRenameRefactoring(oldSnake, newSnake);
+            }
+            const nextM = activeMachine();
+            if (nextM) syncMachineArtifactsToWorkspace(nextM);
+            toast(`Updated global ${nextName}`, "ok");
           },
         });
       });
       li.querySelector(".btn-del-global").addEventListener("click", (e) => {
         e.stopPropagation();
         bridge.deleteNode(g.id, g.name);
+        const nextM = activeMachine();
+        if (nextM) syncMachineArtifactsToWorkspace(nextM);
       });
       globalList.appendChild(li);
     }
@@ -1485,21 +1646,31 @@
             },
           ],
           onConfirm(vals) {
+            const nextName = vals.name.trim() || ev.name;
+            const oldPascal = RustyContract.toPascalCase(ev.name);
+            const newPascal = RustyContract.toPascalCase(nextName);
             bridge.updateNodeAttributes(
               ev.id,
               {
-                name: vals.name.trim() || ev.name,
+                name: nextName,
                 payloadType: vals.payloadType,
               },
               `Update EventDef ${ev.name}`,
             );
-            toast(`Updated event ${vals.name.trim() || ev.name}`, "ok");
+            if (oldPascal && newPascal && oldPascal !== newPascal) {
+              offerEventRenameRefactoring(oldPascal, nextName);
+            }
+            const nextM = activeMachine();
+            if (nextM) syncMachineArtifactsToWorkspace(nextM);
+            toast(`Updated event ${nextName}`, "ok");
           },
         });
       });
       li.querySelector(".btn-del-event").addEventListener("click", (e) => {
         e.stopPropagation();
         bridge.deleteNode(ev.id, ev.name);
+        const nextM = activeMachine();
+        if (nextM) syncMachineArtifactsToWorkspace(nextM);
       });
       eventList.appendChild(li);
     }
@@ -2030,71 +2201,340 @@
     }
   }
 
-  async function commitStatesToGitHub(statesToCommit, customMessage) {
+  function deleteTransitionWithConfirm(tr) {
     const m = activeMachine();
-    if (!m || !statesToCommit.length) {
-      toast("No states to commit", "warn");
-      return { ok: false };
+    if (!m || !tr) return;
+    if (tr.action && tr.action.trim()) {
+      const ok = window.confirm(
+        `Delete transition "${tr.srcName} → ${tr.dstName}" (${tr.event})? Its custom action hook will be removed from ${tr.srcName}.`,
+      );
+      if (!ok) return;
     }
-    const firstEff = RustyContract.resolveStateGitLink(m, statesToCommit[0]);
-    if (!firstEff.gitOwner || !firstEff.gitRepo) {
-      toast("Connect a Git repository first (click 'Connect Git Repository…')", "warn");
-      return { ok: false };
+    if (state.codeEditorSession && state.codeEditorSession.transitionId === tr.id) {
+      closeCodeEditorSession(false);
+    }
+    const srcId = tr.srcId;
+    bridge.deleteNode(tr.id, tr.name || tr.event);
+    if (state.selectedType === "transition" && state.selectedId === tr.id) {
+      state.selectedType = null;
+      state.selectedId = null;
+    }
+    const nextM = activeMachine();
+    if (nextM) {
+      const nextSrc = nextM.states.find((s) => s.id === srcId);
+      if (nextSrc) {
+        const composed = RustyContract.composeStateModuleRs(nextM, nextSrc).code;
+        bridge.updateNodeAttributes(nextSrc.id, { codeCache: composed }, `Recompose ${nextSrc.name} after transition delete`);
+      }
+      syncMachineArtifactsToWorkspace(activeMachine());
+    }
+  }
+
+  function offerGlobalRenameRefactoring(oldSnake, newSnake) {
+    const m = activeMachine();
+    if (!m || !oldSnake || !newSnake || oldSnake === newSnake) return;
+    const stateUpdates = [];
+    const transUpdates = [];
+    let totalReplacements = 0;
+
+    for (const st of m.states || []) {
+      const rEntry = RustyAnalyzer.renameGlobalIdentifierInCode(st.entryCode || "", oldSnake, newSnake);
+      const rExit = RustyAnalyzer.renameGlobalIdentifierInCode(st.exitCode || "", oldSnake, newSnake);
+      const count = rEntry.replacements + rExit.replacements;
+      if (count > 0) {
+        totalReplacements += count;
+        stateUpdates.push({ st, entryCode: rEntry.code, exitCode: rExit.code });
+      }
     }
 
-    const changes = statesToCommit.map((st) => {
-      const eff = RustyContract.resolveStateGitLink(m, st);
-      const composed = RustyContract.composeStateModuleRs(m, st).code;
-      return {
-        path: eff.gitPath,
-        content: st.code && st.code.includes("// @rusty:hook") ? st.code : composed,
-        mode: "100644",
-      };
+    for (const tr of m.transitions || []) {
+      const rGuard = RustyAnalyzer.renameGlobalIdentifierInGuard(tr.guard || "", oldSnake, newSnake);
+      const rAction = RustyAnalyzer.renameGlobalIdentifierInCode(tr.action || "", oldSnake, newSnake);
+      const count = rGuard.replacements + rAction.replacements;
+      if (count > 0) {
+        totalReplacements += count;
+        transUpdates.push({ tr, guard: rGuard.guard, action: rAction.code });
+      }
+    }
+
+    if (totalReplacements === 0) return;
+    if (
+      !window.confirm(
+        `Found ${totalReplacements} code/guard reference(s) to "${oldSnake}". Update them to "${newSnake}" automatically?`,
+      )
+    ) {
+      return;
+    }
+
+    const updatedTransMap = new Map(transUpdates.map((u) => [u.tr.id, u]));
+    const updatedStateMap = new Map(stateUpdates.map((u) => [u.st.id, u]));
+    const nextModel = {
+      ...m,
+      states: (m.states || []).map((s) => {
+        const u = updatedStateMap.get(s.id);
+        return u ? { ...s, entryCode: u.entryCode, exitCode: u.exitCode } : s;
+      }),
+      transitions: (m.transitions || []).map((t) => {
+        const u = updatedTransMap.get(t.id);
+        return u ? { ...t, guard: u.guard, action: u.action } : t;
+      }),
+    };
+
+    bridge.runTransaction(`Refactor globals.${oldSnake} → globals.${newSnake}`, () => {
+      for (const u of stateUpdates) {
+        bridge.client.setAttribute(u.st.id, "entryCode", u.entryCode);
+        bridge.client.setAttribute(u.st.id, "exitCode", u.exitCode);
+        const updatedSt = nextModel.states.find((s) => s.id === u.st.id);
+        const composed = RustyContract.composeStateModuleRs(nextModel, updatedSt).code;
+        bridge.client.setAttribute(u.st.id, "codeCache", composed);
+        const deps = RustyAnalyzer.extractDependencies(`${u.entryCode}\n${u.exitCode}`, nextModel);
+        bridge._applyDepsInsideTx(u.st.id, deps.memberIds, RustyAnalyzer.serializeDepsSnapshot(deps.snapshot));
+      }
+      for (const u of transUpdates) {
+        bridge.client.setAttribute(u.tr.id, "guard", u.guard);
+        bridge.client.setAttribute(u.tr.id, "action", u.action);
+        const deps = RustyAnalyzer.extractDependencies("", nextModel, {
+          triggerEvent: u.tr.event,
+          guardText: u.guard,
+          actionText: u.action,
+        });
+        bridge._applyDepsInsideTx(u.tr.id, deps.memberIds, RustyAnalyzer.serializeDepsSnapshot(deps.snapshot));
+      }
     });
+    toast(`Updated ${totalReplacements} reference(s) to ${newSnake}`, "ok");
+  }
 
-    const message =
-      customMessage ||
-      `rusty: update ${statesToCommit.map((s) => s.name).join(", ")}`;
+  function offerEventRenameRefactoring(oldPascal, newEventName) {
+    const m = activeMachine();
+    if (!m || !oldPascal || !newEventName) return;
+    const matches = (m.transitions || []).filter(
+      (t) => RustyContract.toPascalCase(t.event || "") === oldPascal,
+    );
+    if (matches.length === 0) return;
+    if (
+      !window.confirm(
+        `Update ${matches.length} transition(s) using event "${oldPascal}" to "${newEventName}"?`,
+      )
+    ) {
+      return;
+    }
+    bridge.runTransaction(`Rename transition events ${oldPascal} → ${newEventName}`, () => {
+      for (const tr of matches) {
+        bridge.client.setAttribute(tr.id, "event", newEventName);
+        const deps = RustyAnalyzer.extractDependencies("", m, {
+          triggerEvent: newEventName,
+          guardText: tr.guard || "",
+          actionText: tr.action || "",
+        });
+        bridge._applyDepsInsideTx(tr.id, deps.memberIds, RustyAnalyzer.serializeDepsSnapshot(deps.snapshot));
+      }
+    });
+    toast(`Updated ${matches.length} transition event(s) to ${newEventName}`, "ok");
+  }
+
+  async function openCommitModal() {
+    const m = activeMachine();
+    if (!m || !m.gitOwner || !m.gitRepo) {
+      toast("Connect a Git repository first to commit & push", "warn");
+      return;
+    }
+    await state.workspaceQueue.catch(() => {});
+    const params = workspaceParamsForMachine(m);
+    $("commitRepoSummary").value = `${m.gitOwner}/${m.gitRepo} @ ${m.gitBaseCommitSha ? m.gitBaseCommitSha.slice(0, 12) : "HEAD"}`;
+    $("commitTargetBranch").value = m.gitBranch || "main";
+    $("chkCreateTargetBranch").checked = false;
+    $("commitModalStatus").textContent = "Loading workspace delta & running validation gate…";
+    $("commitValidationBox").className = "commit-validation-box";
+    $("commitValidationBox").textContent = "Running design checks & cargo check against live workspace…";
+    $("commitFilesList").innerHTML = "";
+    $("commitDiffPreview").textContent = "";
+    $("commitDiffPath").textContent = "-";
+    $("commitChangeCount").textContent = "0";
+    $("btnForceCommitWorkspace").classList.add("hidden");
+    $("btnConfirmCommitWorkspace").disabled = true;
+    $("commitModal").classList.remove("hidden");
+
+    const branchDl = $("commitBranchSuggestions");
+    if (branchDl) branchDl.innerHTML = "";
+
+    const [wsRes, refsRes, filesForCheck] = await Promise.all([
+      gitClient.getWorkspaceStatus(params, { checkRemote: true, includeDiff: true }).catch((err) => ({ error: err.message, files: [] })),
+      state.gitStatus.hasGithubToken
+        ? gitClient.listRefs(m.gitOwner, m.gitRepo, bridge.projectId).catch(() => [])
+        : Promise.resolve([]),
+      readVirtualCrateFilesForCheck(m),
+    ]);
+
+    if (branchDl && Array.isArray(refsRes)) {
+      for (const rf of refsRes) {
+        if (rf.ref && rf.ref.startsWith("refs/heads/")) {
+          const opt = document.createElement("option");
+          opt.value = rf.ref.slice("refs/heads/".length);
+          branchDl.appendChild(opt);
+        }
+      }
+    }
+
+    const statusFiles = (wsRes && wsRes.files) || [];
+    state.commitReviewStatus = wsRes;
+    $("commitChangeCount").textContent = String(statusFiles.length);
+    $("commitMessageInput").value = `rusty: update ${m.name} (${statusFiles.length} file${statusFiles.length === 1 ? "" : "s"})`;
+
+    const listEl = $("commitFilesList");
+    if (statusFiles.length === 0) {
+      listEl.innerHTML = '<li class="muted-mono" style="padding:10px;">No uncommitted workspace deltas vs pinned base commit.</li>';
+      $("commitDiffPreview").textContent = "Workspace is clean.";
+    } else {
+      statusFiles.forEach((f, idx) => {
+        const li = document.createElement("li");
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = `commit-file-row${idx === 0 ? " active" : ""}`;
+        const label = f.renamedFrom ? `${f.path} ← ${f.renamedFrom}` : f.path;
+        btn.innerHTML = `<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(label)}</span><span class="commit-badge commit-badge-${escapeHtml(f.status)}">${escapeHtml(f.status)}</span>`;
+        btn.addEventListener("click", () => {
+          listEl.querySelectorAll(".commit-file-row").forEach((b) => b.classList.remove("active"));
+          btn.classList.add("active");
+          $("commitDiffPath").textContent = f.path;
+          if (f.status === "deleted") {
+            $("commitDiffPreview").textContent = `--- DELETED (${f.path}) ---\n${f.baseContent || ""}`;
+          } else if (f.status === "modified" && f.baseContent) {
+            $("commitDiffPreview").textContent = `=== NEW (${f.path}) ===\n${f.content || ""}\n\n=== PINNED BASE ===\n${f.baseContent}`;
+          } else {
+            $("commitDiffPreview").textContent = f.content || "";
+          }
+        });
+        li.appendChild(btn);
+        listEl.appendChild(li);
+      });
+      const first = statusFiles[0];
+      $("commitDiffPath").textContent = first.path;
+      $("commitDiffPreview").textContent =
+        first.status === "deleted"
+          ? `--- DELETED (${first.path}) ---\n${first.baseContent || ""}`
+          : first.content || "";
+    }
+
+    // Run pre-push validation gate: RustyAnalyzer design errors + real cargo check on virtual tree
+    const validationErrors = [];
+    const imp = RustyAnalyzer.computeDesignImpact(m);
+    for (const item of (imp && imp.items) || []) {
+      for (const r of item.reasons || []) {
+        if (r.severity === "error") {
+          validationErrors.push(`${item.name} [${r.code}]: ${r.message}`);
+        }
+      }
+    }
 
     try {
-      const res = await gitClient.commit({
-        owner: firstEff.gitOwner,
-        repo: firstEff.gitRepo,
-        branch: firstEff.gitBranch || "main",
-        expectedParentSha: statesToCommit[0].gitBaseCommitSha || undefined,
+      const checkRes = await fetch("/routers/rustsim/check", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ files: filesForCheck }),
+      });
+      const checkData = await checkRes.json();
+      if (!checkData.ok) {
+        const diags = (checkData.diagnostics || [])
+          .filter((d) => d.level === "error")
+          .slice(0, 5)
+          .map((d) => d.message || d.rendered);
+        if (diags.length > 0) validationErrors.push(...diags);
+        else validationErrors.push(checkData.error || checkData.rawStderr || "cargo check failed");
+      }
+    } catch (err) {
+      validationErrors.push(`rustsim check unavailable: ${err.message}`);
+    }
+
+    state.commitValidationErrors = validationErrors;
+    const valBox = $("commitValidationBox");
+    if (validationErrors.length === 0) {
+      valBox.className = "commit-validation-box ok";
+      valBox.textContent = "✓ Model impact checks & cargo check passed cleanly.";
+      $("btnConfirmCommitWorkspace").disabled = statusFiles.length === 0;
+      $("btnForceCommitWorkspace").classList.add("hidden");
+    } else {
+      valBox.className = "commit-validation-box err";
+      valBox.innerHTML =
+        `<strong>✕ Push blocked (${validationErrors.length} error${validationErrors.length === 1 ? "" : "s"}):</strong>` +
+        validationErrors.slice(0, 4).map((e) => `<div>• ${escapeHtml(e)}</div>`).join("");
+      $("btnConfirmCommitWorkspace").disabled = true;
+      if (statusFiles.length > 0) {
+        $("btnForceCommitWorkspace").classList.remove("hidden");
+      }
+    }
+    $("commitModalStatus").textContent = wsRes && wsRes.error ? `Status warning: ${wsRes.error}` : "";
+  }
+
+  async function submitWorkspaceCommit(force = false) {
+    const m = activeMachine();
+    if (!m) return;
+    if (force && !window.confirm("Push uncommitted changes even though validation/compilation failed?")) {
+      return;
+    }
+    const params = workspaceParamsForMachine(m);
+    const branch = $("commitTargetBranch").value.trim() || m.gitBranch || "main";
+    const createBranch = Boolean($("chkCreateTargetBranch").checked);
+    const message = $("commitMessageInput").value.trim() || `rusty: update ${m.name}`;
+    const validationErrors = state.commitValidationErrors || [];
+
+    $("commitModalStatus").textContent = "Pushing atomic commit to GitHub…";
+    $("btnConfirmCommitWorkspace").disabled = true;
+    $("btnForceCommitWorkspace").disabled = true;
+
+    try {
+      const res = await gitClient.commitWorkspace(params, {
+        branch,
         message,
-        changes,
-        projectId: bridge.projectId,
+        force,
+        validationErrors,
+        createBranch,
       });
 
-      if (res.conflict) {
-        openConflictModal(res.body, {
-          owner: firstEff.gitOwner,
-          repo: firstEff.gitRepo,
-          branch: firstEff.gitBranch || "main",
-          states: statesToCommit,
-          message,
-        });
-        return { ok: false, conflict: true };
+      if (res.blocked) {
+        $("commitModalStatus").textContent = res.body.error || "Commit blocked by validation gate.";
+        $("btnForceCommitWorkspace").classList.remove("hidden");
+        return;
       }
 
-      bridge.runTransaction(`Sync gitBaseCommitSha (${res.newCommitSha.slice(0, 7)})`, () => {
-        for (const st of statesToCommit) {
+      if (res.conflict) {
+        $("commitModal").classList.add("hidden");
+        openConflictModal(res.body, {
+          owner: m.gitOwner,
+          repo: m.gitRepo,
+          branch,
+          machineId: m.id,
+          stateIds: m.states.map((s) => s.id),
+          message,
+          force,
+          validationErrors,
+          params,
+        });
+        return;
+      }
+
+      bridge.runTransaction(`Pin commit ${res.newCommitSha.slice(0, 7)}`, () => {
+        bridge.client.setAttribute(m.id, "gitBranch", res.targetBranch || branch);
+        bridge.client.setAttribute(m.id, "gitBaseCommitSha", res.newCommitSha);
+        for (const st of m.states) {
           bridge.client.setAttribute(st.id, "gitBaseCommitSha", res.newCommitSha);
           state.dirtyStateIds.delete(st.id);
         }
       });
 
-      if (res.rebased) {
-        toast(`Committed ${res.newCommitSha.slice(0, 7)} (transparently rebased over upstream changes!)`, "warn");
-      } else {
-        toast(`Committed ${changes.length} file(s) → ${res.newCommitSha.slice(0, 7)}`, "ok");
-      }
+      $("commitModal").classList.add("hidden");
+      await refreshWorkspaceStatus(activeMachine(), false);
+      toast(
+        `Committed ${res.committedCount} file(s) → ${res.newCommitSha.slice(0, 7)}${res.forced ? " (forced)" : ""}`,
+        res.rebased || res.forced ? "warn" : "ok",
+      );
       renderAll();
-      return { ok: true, newCommitSha: res.newCommitSha };
     } catch (err) {
-      toast(`GitHub commit failed: ${err.message}`, "err");
-      return { ok: false };
+      $("commitModalStatus").textContent = `Commit failed: ${err.message}`;
+      toast(`Commit failed: ${err.message}`, "err");
+    } finally {
+      $("btnConfirmCommitWorkspace").disabled = state.commitValidationErrors.length > 0;
+      $("btnForceCommitWorkspace").disabled = false;
     }
   }
 
@@ -2116,15 +2556,16 @@
     const m = activeMachine();
     if (!m) return;
     $("diagDrawer").classList.remove("hidden");
-    $("diagTitle").textContent = `Running cargo check on ${m.name}…`;
-    $("diagOutput").textContent = "Compiling generated Rust crate…";
+    $("diagTitle").textContent = `Running cargo check on ${m.name} workspace…`;
+    $("diagOutput").textContent = "Compiling virtual crate from webgme-git workspace…";
 
     try {
+      const files = await readVirtualCrateFilesForCheck(m);
       const res = await fetch("/routers/rustsim/check", {
         method: "POST",
         credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: m }),
+        body: JSON.stringify({ files }),
       });
       const data = await res.json();
       const mFocus = activeMachine();
@@ -2139,7 +2580,7 @@
       if (data.ok) {
         $("diagTitle").textContent = `✓ cargo check passed (${data.durationMs}ms · ${data.fileCount} files)`;
         const warnings = (data.diagnostics || []).map((d) => d.rendered).join("\n");
-        $("diagOutput").textContent = warnings || "Zero errors, zero warnings. Generated Rust crate compiles cleanly!";
+        $("diagOutput").textContent = warnings || "Zero errors, zero warnings. Workspace Rust crate compiles cleanly!";
         toast(`rustc verified ${m.name} in ${data.durationMs}ms`, "ok");
       } else {
         $("diagTitle").textContent = `✕ cargo check failed (${data.durationMs}ms)`;
@@ -2166,11 +2607,12 @@
     banner.textContent = `Compiling & running native Rust binary for ${events.length} event(s)…`;
 
     try {
+      const files = await readVirtualCrateFilesForCheck(m);
       const res = await fetch("/routers/rustsim/run", {
         method: "POST",
         credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: m, events }),
+        body: JSON.stringify({ files, events }),
       });
       const data = await res.json();
       if (!data.ok) {
@@ -2226,7 +2668,6 @@
       btn.addEventListener("click", () => switchCodeEditorStateHook(btn.dataset.editorHook));
     });
     $("btnSaveCodeEditor").addEventListener("click", () => saveCodeEditorSession(false));
-    $("btnCommitCodeEditor").addEventListener("click", () => saveCodeEditorSession(true));
     $("btnCancelCodeEditor").addEventListener("click", () => {
       if (confirmDiscardCodeEditorIfDirty()) cancelCodeEditorSession();
     });
@@ -2350,6 +2791,8 @@
             position: { x: 120 + (idx % 3) * 230, y: 100 + Math.floor(idx / 3) * 140 },
           });
           selectStateForEditing(id);
+          const nextM = activeMachine();
+          if (nextM) syncMachineArtifactsToWorkspace(nextM);
         },
       });
     });
@@ -2412,6 +2855,8 @@
             minValue: (vals.minValue || "").trim(),
             maxValue: (vals.maxValue || "").trim(),
           });
+          const nextM = activeMachine();
+          if (nextM) syncMachineArtifactsToWorkspace(nextM);
         },
       });
     });
@@ -2439,6 +2884,8 @@
             name,
             payloadType: vals.payloadType || "",
           });
+          const nextM = activeMachine();
+          if (nextM) syncMachineArtifactsToWorkspace(nextM);
         },
       });
     });
@@ -2459,31 +2906,70 @@
 
     // State Inspector actions
     $("btnSaveStateMeta").addEventListener("click", () => {
+      const m = activeMachine();
       const st = selectedStateObj();
-      if (!st) return;
+      if (!m || !st) return;
+      const oldPath = RustyContract.resolveStateGitLink(m, st).gitPath;
+      const nextName = $("inpStateName").value.trim() || st.name;
       bridge.updateNodeAttributes(
         st.id,
         {
-          name: $("inpStateName").value.trim() || st.name,
+          name: nextName,
           description: $("inpStateDesc").value,
           isInitial: $("inpStateInitial").checked,
           isFinal: $("inpStateFinal").checked,
         },
         `Update State ${st.name}`,
       );
-      toast(`Saved ${st.name} design attributes`, "ok");
+      const nextM = activeMachine();
+      const nextSt = nextM && nextM.states.find((s) => s.id === st.id);
+      if (nextM && nextSt) {
+        const newPath = RustyContract.resolveStateGitLink(nextM, nextSt).gitPath;
+        const extraOps = [];
+        if (oldPath && newPath && oldPath !== newPath) {
+          const recomposed = RustyContract.composeStateModuleRs(nextM, nextSt).code;
+          bridge.updateNodeAttributes(nextSt.id, { codeCache: recomposed }, `Recompose renamed state ${nextName}`);
+          extraOps.push({ op: "rename", from: oldPath, to: newPath, content: recomposed, mode: "100644" });
+        }
+        syncMachineArtifactsToWorkspace(activeMachine(), extraOps);
+      }
+      toast(`Saved ${nextName} design attributes to workspace`, "ok");
     });
 
     $("btnDeleteState").addEventListener("click", () => {
+      const m = activeMachine();
       const st = selectedStateObj();
-      if (!st) return;
-      if (!window.confirm(`Delete state "${st.name}" from WebGME?`)) return;
+      if (!m || !st) return;
+      const connected = (m.transitions || []).filter((t) => t.srcId === st.id || t.dstId === st.id);
+      const customHooks = connected.filter((t) => t.action && t.action.trim()).length;
+      const msg = connected.length > 0
+        ? `Delete state "${st.name}" and its ${connected.length} connected transition(s)${customHooks ? ` (${customHooks} with custom action hooks)` : ""}?`
+        : `Delete state "${st.name}"?`;
+      if (!window.confirm(msg)) return;
       if (state.codeEditorSession && state.codeEditorSession.stateId === st.id) {
         closeCodeEditorSession(false);
       }
-      bridge.deleteNode(st.id, st.name);
+      const deletedPath = RustyContract.resolveStateGitLink(m, st).gitPath;
+      const incomingSrcIds = Array.from(
+        new Set(connected.filter((t) => t.dstId === st.id && t.srcId !== st.id).map((t) => t.srcId)),
+      );
+      bridge.deleteStateCascade(m.id, st.id, st.name);
       state.selectedType = null;
       state.selectedId = null;
+      const nextM = activeMachine();
+      if (nextM) {
+        for (const sid of incomingSrcIds) {
+          const srcSt = nextM.states.find((s) => s.id === sid);
+          if (srcSt) {
+            const composed = RustyContract.composeStateModuleRs(nextM, srcSt).code;
+            bridge.updateNodeAttributes(srcSt.id, { codeCache: composed }, `Recompose ${srcSt.name} after state delete`);
+          }
+        }
+        syncMachineArtifactsToWorkspace(activeMachine(), deletedPath ? [{ op: "delete", path: deletedPath }] : []);
+        if (nextM.states.length > 0 && !nextM.states.some((s) => s.isInitial)) {
+          toast("Initial state deleted — mark another state as Initial before verifying/simulating", "warn");
+        }
+      }
     });
 
     $("btnPullState").addEventListener("click", () => {
@@ -2530,25 +3016,27 @@
         `Update Transition ${name} & dependsOn`,
         srcSt ? { stateId: srcSt.id, codeCache: recomposedSrc } : null,
       );
-      toast("Saved transition guard & metadata", "ok");
+      const nextM = activeMachine();
+      if (nextM) syncMachineArtifactsToWorkspace(nextM);
+      toast("Saved transition guard & metadata to workspace", "ok");
     });
 
     $("btnDeleteTransition").addEventListener("click", () => {
-      const tr = selectedTransitionObj();
-      if (!tr) return;
-      if (state.codeEditorSession && state.codeEditorSession.transitionId === tr.id) {
-        closeCodeEditorSession(false);
-      }
-      bridge.deleteNode(tr.id, tr.name);
-      state.selectedType = null;
-      state.selectedId = null;
+      deleteTransitionWithConfirm(selectedTransitionObj());
     });
 
-    // GitBar actions
+    // GitBar, Workspace Review, Commit & ZIP Archive actions
     $("btnConnectRepo").addEventListener("click", openRepoModal);
     $("btnConfirmRepoBind").addEventListener("click", confirmRepoBind);
     document.querySelectorAll('input[name="repoConnectMode"]').forEach((radio) => {
       radio.addEventListener("change", updateRepoModalModeUI);
+    });
+
+    $("workspaceStatusPill").addEventListener("click", () => {
+      const m = activeMachine();
+      if (!m) return;
+      if (m.gitOwner && m.gitRepo) openCommitModal();
+      else toast("Hybrid Local Workspace automatically stores your crate in webgme-git. Connect a GitHub repo or click ↓ Download .zip.", "ok");
     });
 
     $("btnPullAll").addEventListener("click", async () => {
@@ -2560,41 +3048,50 @@
           await pullStateFromGitHub(st);
         }
       }
+      const nextM = activeMachine();
+      if (nextM) refreshWorkspaceStatus(nextM, true);
     });
-    $("btnPushCrate").addEventListener("click", async () => {
+    $("btnPushCrate").addEventListener("click", openCommitModal);
+    $("btnConfirmCommitWorkspace").addEventListener("click", () => submitWorkspaceCommit(false));
+    $("btnForceCommitWorkspace").addEventListener("click", () => submitWorkspaceCommit(true));
+    $("btnDiscardWorkspace").addEventListener("click", async () => {
       const m = activeMachine();
-      if (!m || !m.gitOwner || !m.gitRepo) {
-        toast("Connect a Git repository first", "warn");
-        return;
-      }
-      const files = RustyCodegen.generateCrateFiles(m);
-      const changes = Object.entries(files).map(([relPath, content]) => ({
-        path: RustyContract.resolveCrateFilePath(m, relPath),
-        content,
-        mode: "100644",
-      }));
+      if (!m) return;
+      if (!window.confirm(`Discard all uncommitted Git workspace deltas for ${m.name}?`)) return;
       try {
-        const res = await gitClient.commit({
-          owner: m.gitOwner,
-          repo: m.gitRepo,
-          branch: m.gitBranch || "main",
-          message: `rusty: push standalone crate ${m.crateName}`,
-          changes,
-          projectId: bridge.projectId,
-        });
-        if (res.conflict) {
-          openConflictModal(res.body, {
-            owner: m.gitOwner,
-            repo: m.gitRepo,
-            branch: m.gitBranch || "main",
-            states: m.states,
-            message: `rusty: push standalone crate ${m.crateName}`,
-          });
-          return;
-        }
-        toast(`Pushed full Rust crate (${changes.length} files) → ${res.newCommitSha.slice(0, 7)}`, "ok");
+        await gitClient.discardWorkspace(workspaceParamsForMachine(m));
+        $("commitModal").classList.add("hidden");
+        await refreshWorkspaceStatus(m, true);
+        toast("Discarded uncommitted workspace changes", "ok");
       } catch (err) {
-        toast(`Push failed: ${err.message}`, "err");
+        toast(`Discard failed: ${err.message}`, "err");
+      }
+    });
+
+    $("btnDownloadZip").addEventListener("click", async () => {
+      if (!state.machines.length) return;
+      await state.workspaceQueue.catch(() => {});
+      await Promise.all(state.machines.map((machine) => ensureMachineWorkspaceReady(machine)));
+      const workspaces = state.machines.map(workspaceParamsForMachine);
+      const rawName = (bridge.projectId || "rusty-artifacts").replace(/\+/g, "-");
+      try {
+        const count = await gitClient.downloadArchiveZip({
+          projectId: bridge.projectId || "default",
+          workspaces,
+          filename: rawName,
+        });
+        toast(`Downloaded ${rawName}.zip (${count} file(s))`, "ok");
+      } catch (err) {
+        toast(`ZIP download failed: ${err.message}`, "err");
+      }
+    });
+
+    window.addEventListener("beforeunload", (e) => {
+      const m = activeMachine();
+      const ws = m && (state.workspaceStatusByMachineId.get(m.id) || state.workspaceStatus);
+      if (m && m.gitOwner && m.gitRepo && ws && ws.dirtyCount > 0) {
+        e.preventDefault();
+        e.returnValue = "";
       }
     });
 
@@ -2647,15 +3144,29 @@
       const { body, ctx, conflict } = state.pendingConflict;
       const resolved = $("conflictResolved").value;
       try {
-        const res = await gitClient.commit({
-          owner: ctx.owner,
-          repo: ctx.repo,
-          branch: ctx.branch,
-          expectedParentSha: body.currentHeadSha,
-          message: `${ctx.message} (resolved merge conflict)`,
-          changes: [{ path: conflict.path, content: resolved, mode: "100644" }],
-          projectId: bridge.projectId,
-        });
+        let res;
+        if (ctx.params) {
+          await gitClient.patchWorkspaceOps(ctx.params, [
+            { op: "write", path: conflict.path, content: resolved, mode: "100644" },
+          ]);
+          await gitClient.rebaseWorkspaceBase(ctx.params, body.currentHeadSha, ctx.branch);
+          res = await gitClient.commitWorkspace(ctx.params, {
+            branch: ctx.branch,
+            message: `${ctx.message} (resolved merge conflict)`,
+            force: Boolean(ctx.force),
+            validationErrors: ctx.validationErrors || [],
+          });
+        } else {
+          res = await gitClient.commit({
+            owner: ctx.owner,
+            repo: ctx.repo,
+            branch: ctx.branch,
+            expectedParentSha: body.currentHeadSha,
+            message: `${ctx.message} (resolved merge conflict)`,
+            changes: [{ path: conflict.path, content: resolved, mode: "100644" }],
+            projectId: bridge.projectId,
+          });
+        }
         if (res.conflict) {
           toast("Upstream moved again; please review new conflict", "warn");
           openConflictModal(res.body, ctx);
@@ -2663,6 +3174,11 @@
         }
         $("conflictModal").classList.add("hidden");
         state.pendingConflict = null;
+        const m = activeMachine();
+        if (m && res.newCommitSha) {
+          bridge.setMachineBaseCommitSha(m.id, res.newCommitSha, m.states.map((s) => s.id));
+          await refreshWorkspaceStatus(activeMachine(), false);
+        }
         toast(`Conflict resolved & committed → ${res.newCommitSha.slice(0, 7)}`, "ok");
         if (state.codeEditorSession) {
           closeCodeEditorSession(true);
@@ -2770,6 +3286,16 @@
     }
   }
 
+  async function resolveBranchHeadSha(owner, repo, branch) {
+    try {
+      const refs = await gitClient.listRefs(owner, repo, bridge.projectId);
+      const exact = (refs || []).find((r) => r.ref === `refs/heads/${branch}`);
+      return exact && exact.sha ? exact.sha : "";
+    } catch (_err) {
+      return "";
+    }
+  }
+
   async function confirmRepoBind() {
     const m = activeMachine();
     if (!m) return;
@@ -2788,17 +3314,29 @@
     }
 
     const mode = getSelectedConnectMode();
+    const baseCommitSha = state.gitStatus.hasGithubToken
+      ? await resolveBranchHeadSha(gitOwner, gitRepo, gitBranch)
+      : "";
+
     if (mode === "bind") {
       bridge.bindMachineRepo(m.id, {
         gitOwner,
         gitRepo,
         gitBranch,
         gitPath,
+        gitBaseCommitSha: baseCommitSha,
         clearStateOverrides: true,
         stateIds: m.states.map((s) => s.id),
       });
       $("repoModal").classList.add("hidden");
-      toast(`Connected ${gitOwner}/${gitRepo}@${gitBranch} (${gitPath})`, "ok");
+      const nextM = activeMachine();
+      if (nextM) {
+        await syncMachineArtifactsToWorkspace(nextM);
+      }
+      toast(
+        `Connected ${gitOwner}/${gitRepo}${baseCommitSha ? `@${baseCommitSha.slice(0, 7)}` : ""} (${gitPath})`,
+        "ok",
+      );
       return;
     }
 
@@ -2813,7 +3351,7 @@
         owner: gitOwner,
         repo: gitRepo,
         dirPath: gitPath,
-        ref: gitBranch,
+        ref: baseCommitSha || gitBranch,
         projectId: bridge.projectId,
       });
       const { model, summary } = RustyImporter.parseCrateFilesToModel(filesMap, {
@@ -2823,6 +3361,7 @@
         dirPath: gitPath,
         machineName,
       });
+      model.gitBaseCommitSha = baseCommitSha;
       bridge.populateMachineFromImport(m.id, model);
       state.selectedType = null;
       state.selectedId = null;
@@ -2833,8 +3372,10 @@
       state.connectMode = false;
       state.connectSourceId = null;
       $("repoModal").classList.add("hidden");
+      const nextM = activeMachine();
+      if (nextM) await refreshWorkspaceStatus(nextM, true);
       toast(
-        `Connected & imported ${model.name} (${summary.states} states, ${summary.transitions} transitions)`,
+        `Connected & imported ${model.name}${baseCommitSha ? ` @ ${baseCommitSha.slice(0, 7)}` : ""} (${summary.states} states, ${summary.transitions} transitions)`,
         "ok",
       );
       renderAll();

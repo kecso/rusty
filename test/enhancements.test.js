@@ -109,7 +109,36 @@ describe("Rusty Studio V3 Enhancements (Codec, Impact, Determinism, Layout, Impo
     const evImpact = analyzer.computeDesignImpact(droppedEvModel);
     assert.ok(evImpact.impactedTransitions >= 4);
 
-    // 4. Introduce an overlapping guard on Standby -> flags DESIGN_GUARD_OVERLAP with counterexample
+    // 4. Bounds change -> emits DESIGN_BOUNDS_CHANGED warning for dependent states/transitions
+    const boundsModel = JSON.parse(JSON.stringify(cleanModel));
+    boundsModel.globals.find((g) => g.name === "current_temp_c").maxValue = "120.0";
+    const boundsImpact = analyzer.computeDesignImpact(boundsModel);
+    assert.ok(boundsImpact.impactedStates + boundsImpact.impactedTransitions > 0);
+    assert.ok(
+      boundsImpact.items.some((it) => it.reasons.some((r) => r.code === "DESIGN_BOUNDS_CHANGED")),
+    );
+
+    // 5. Token-safe global refactoring preserves comments and string literals
+    const refactoredCode = analyzer.renameGlobalIdentifierInCode(
+      '// keep globals.max_cycle_ticks comment\nlet s = "globals.max_cycle_ticks";\nif globals.max_cycle_ticks > 0 { globals.max_cycle_ticks_extra = 1; }\nglobals.max_cycle_ticks += 1;',
+      "max_cycle_ticks",
+      "duty_limit",
+    );
+    assert.equal(refactoredCode.replacements, 2);
+    assert.match(refactoredCode.code, /\/\/ keep globals\.max_cycle_ticks comment/);
+    assert.match(refactoredCode.code, /"globals\.max_cycle_ticks"/);
+    assert.match(refactoredCode.code, /globals\.max_cycle_ticks_extra/);
+    assert.match(refactoredCode.code, /globals\.duty_limit \+= 1;/);
+
+    const refactoredGuard = analyzer.renameGlobalIdentifierInGuard(
+      'max_cycle_ticks < 10 && label != "max_cycle_ticks"',
+      "max_cycle_ticks",
+      "duty_limit",
+    );
+    assert.equal(refactoredGuard.replacements, 1);
+    assert.equal(refactoredGuard.guard, 'duty_limit < 10 && label != "max_cycle_ticks"');
+
+    // 6. Introduce an overlapping guard on Standby -> flags DESIGN_GUARD_OVERLAP with counterexample
     const overlapModel = JSON.parse(JSON.stringify(cleanModel));
     const startHeat = overlapModel.transitions.find(
       (t) => t.srcName === "Standby" && t.dstName === "Heating",

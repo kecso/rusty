@@ -402,12 +402,15 @@
       });
     }
 
-    bindMachineRepo(machineId, { gitOwner, gitRepo, gitBranch, gitPath, clearStateOverrides, stateIds }) {
+    bindMachineRepo(machineId, { gitOwner, gitRepo, gitBranch, gitPath, gitBaseCommitSha, clearStateOverrides, stateIds }) {
       this.runTransaction(`Bind GitHub repo ${gitOwner}/${gitRepo}@${gitBranch}`, () => {
         this.client.setAttribute(machineId, "gitOwner", gitOwner);
         this.client.setAttribute(machineId, "gitRepo", gitRepo);
         this.client.setAttribute(machineId, "gitBranch", gitBranch);
         this.client.setAttribute(machineId, "gitPath", gitPath);
+        if (gitBaseCommitSha !== undefined) {
+          this.client.setAttribute(machineId, "gitBaseCommitSha", gitBaseCommitSha || "");
+        }
 
         if (clearStateOverrides && Array.isArray(stateIds)) {
           for (const stId of stateIds) {
@@ -415,7 +418,21 @@
             this.client.setAttribute(stId, "gitRepo", "");
             this.client.setAttribute(stId, "gitBranch", "");
             this.client.setAttribute(stId, "gitPath", "");
+            if (gitBaseCommitSha !== undefined) {
+              this.client.setAttribute(stId, "gitBaseCommitSha", gitBaseCommitSha || "");
+            }
           }
+        }
+      });
+    }
+
+    setMachineBaseCommitSha(machineId, commitSha, stateIds = []) {
+      const sha = commitSha || "";
+      const short = sha ? sha.slice(0, 7) : "clear";
+      this.runTransaction(`Pin gitBaseCommitSha (${short})`, () => {
+        this.client.setAttribute(machineId, "gitBaseCommitSha", sha);
+        for (const stId of stateIds) {
+          this.client.setAttribute(stId, "gitBaseCommitSha", sha);
         }
       });
     }
@@ -533,6 +550,7 @@
         this.client.setAttribute(smId, "gitBranch", model.gitBranch || "main");
         this.client.setAttribute(smId, "gitPath", model.gitPath || "src/states");
         this.client.setAttribute(smId, "gitArtifactType", "dir");
+        this.client.setAttribute(smId, "gitBaseCommitSha", model.gitBaseCommitSha || "");
         this._populateMachineChildrenInsideTx(smId, model);
         return smId;
       });
@@ -571,6 +589,7 @@
         this.client.setAttribute(machineId, "gitBranch", model.gitBranch || "main");
         this.client.setAttribute(machineId, "gitPath", model.gitPath || "src/states");
         this.client.setAttribute(machineId, "gitArtifactType", "dir");
+        this.client.setAttribute(machineId, "gitBaseCommitSha", model.gitBaseCommitSha || "");
 
         this._populateMachineChildrenInsideTx(machineId, model);
         return machineId;
@@ -599,6 +618,23 @@
     deleteNode(nodeId, label) {
       this.runTransaction(`Delete ${label || nodeId}`, () => {
         this.client.deleteNode(nodeId);
+      });
+    }
+
+    deleteStateCascade(machineId, stateId, stateName) {
+      this.runTransaction(`Delete State ${stateName || stateId} & connected transitions`, () => {
+        const smNode = this.client.getNode(machineId);
+        if (smNode) {
+          const childIds = (smNode.getChildrenIds() || []).slice();
+          for (const cid of childIds) {
+            const child = this.client.getNode(cid);
+            if (!child || !this._isMetaType(child, "Transition")) continue;
+            if (child.getPointerId("src") === stateId || child.getPointerId("dst") === stateId) {
+              this.client.deleteNode(cid);
+            }
+          }
+        }
+        this.client.deleteNode(stateId);
       });
     }
 

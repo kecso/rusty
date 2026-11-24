@@ -31,8 +31,13 @@ config.plugin.basePaths = config.plugin.basePaths || [];
 config.plugin.basePaths.push(path.join(ROOT, "src/plugins"));
 
 // Wire Layer 2 (`webgme-git`): native GitRouter at /routers/gitrouter,
-// optional /profile user/repo portal, and git-seed.webgmex without overwriting Layer 1 auth
-applyGitConfig(config, { gitRouterOpts: { requireProjectId: false } });
+// restart-safe workspace overlay store, optional /profile portal, and git-seed.webgmex
+applyGitConfig(config, {
+  gitRouterOpts: {
+    requireProjectId: false,
+    workspaceDir: process.env.RUSTY_WORKSPACE_DIR || path.join(ROOT, ".rusty-workspaces"),
+  },
+});
 
 // Register Rusty-specific WebGME REST routers:
 //   - /routers/rustsim   : Rust crate check & native simulation runner

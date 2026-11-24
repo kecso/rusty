@@ -3,7 +3,7 @@
 
   /**
    * Client wrapper for `webgme-git` mounted at `/routers/gitrouter`,
-   * plus directory-level sweeping for StateMachine import.
+   * covering GitHub refs/repos, commit-pinned Workspace overlays, and ZIP archives.
    */
   class GitSyncClient {
     constructor(baseUrl = "/routers/gitrouter") {
@@ -23,6 +23,25 @@
         data = { error: text };
       }
       return { ok: res.ok, status: res.status, data };
+    }
+
+    _wsQuery(params = {}, extra = {}) {
+      const q = new URLSearchParams();
+      const merged = { ...params, ...extra };
+      for (const [k, v] of Object.entries(merged)) {
+        if (v !== undefined && v !== null && v !== "") {
+          q.set(k, String(v));
+        }
+      }
+      return q.toString();
+    }
+
+    _wsHeaders(params = {}) {
+      const headers = { "Content-Type": "application/json" };
+      if (params && params.projectId) {
+        headers["X-WebGME-Project-Id"] = params.projectId;
+      }
+      return headers;
     }
 
     async getStatus() {
@@ -56,6 +75,153 @@
         throw err;
       }
       return data;
+    }
+
+    // ---- Hybrid Commit-Pinned Workspace Overlay API ----
+
+    async getWorkspaceStatus(params, opts = {}) {
+      const qs = this._wsQuery(params, {
+        checkRemote: opts.checkRemote ? "true" : undefined,
+        includeDiff: opts.includeDiff === false ? "false" : undefined,
+      });
+      const { ok, status, data } = await this._json(`${this.baseUrl}/workspace/status?${qs}`);
+      if (!ok) {
+        const err = new Error(data.error || `Workspace status failed (${status})`);
+        err.status = status;
+        throw err;
+      }
+      return data;
+    }
+
+    async getWorkspaceTree(params, dirPath = "") {
+      const qs = this._wsQuery(params, dirPath ? { path: dirPath } : {});
+      const { ok, status, data } = await this._json(`${this.baseUrl}/workspace/tree?${qs}`);
+      if (!ok) {
+        const err = new Error(data.error || `Workspace tree failed (${status})`);
+        err.status = status;
+        throw err;
+      }
+      return data;
+    }
+
+    async readWorkspaceFile(params, filePath) {
+      const qs = this._wsQuery(params, { path: filePath });
+      const { ok, status, data } = await this._json(`${this.baseUrl}/workspace/file?${qs}`);
+      if (!ok) {
+        const err = new Error(data.error || `Workspace file read failed (${status})`);
+        err.status = status;
+        throw err;
+      }
+      return data;
+    }
+
+    async patchWorkspaceOps(params, ops) {
+      const { ok, status, data } = await this._json(`${this.baseUrl}/workspace/ops`, {
+        method: "PATCH",
+        headers: this._wsHeaders(params),
+        body: JSON.stringify({ ...params, ops }),
+      });
+      if (!ok) {
+        const err = new Error(data.error || `Workspace update failed (${status})`);
+        err.status = status;
+        throw err;
+      }
+      return data;
+    }
+
+    async discardWorkspace(params, paths = null) {
+      const { ok, status, data } = await this._json(`${this.baseUrl}/workspace/discard`, {
+        method: "POST",
+        headers: this._wsHeaders(params),
+        body: JSON.stringify({ ...params, ...(paths ? { paths } : {}) }),
+      });
+      if (!ok) {
+        const err = new Error(data.error || `Workspace discard failed (${status})`);
+        err.status = status;
+        throw err;
+      }
+      return data;
+    }
+
+    async commitWorkspace(params, { branch, message, force = false, validationErrors = [], createBranch = false } = {}) {
+      const { ok, status, data } = await this._json(`${this.baseUrl}/workspace/commit`, {
+        method: "POST",
+        headers: this._wsHeaders(params),
+        body: JSON.stringify({
+          ...params,
+          branch,
+          message,
+          force: Boolean(force),
+          validationErrors,
+          createBranch: Boolean(createBranch),
+        }),
+      });
+      if (status === 409) {
+        return { conflict: true, blocked: false, body: data };
+      }
+      if (status === 422) {
+        return { conflict: false, blocked: true, body: data };
+      }
+      if (!ok) {
+        const err = new Error(data.error || `Workspace commit failed (${status})`);
+        err.status = status;
+        throw err;
+      }
+      return {
+        conflict: false,
+        blocked: false,
+        newCommitSha: data.newCommitSha,
+        rebased: Boolean(data.rebased),
+        forced: Boolean(data.forced),
+        committedCount: data.committedCount || 0,
+        targetBranch: data.targetBranch || branch,
+      };
+    }
+
+    async rebaseWorkspaceBase(params, newBaseCommitSha, targetBranch) {
+      const { ok, status, data } = await this._json(`${this.baseUrl}/workspace/rebase-base`, {
+        method: "POST",
+        headers: this._wsHeaders(params),
+        body: JSON.stringify({ ...params, newBaseCommitSha, targetBranch }),
+      });
+      if (!ok) {
+        const err = new Error(data.error || `Workspace rebase failed (${status})`);
+        err.status = status;
+        throw err;
+      }
+      return data;
+    }
+
+    async downloadArchiveZip({ projectId, workspaces = null, filename = "project-artifacts" } = {}) {
+      const res = await fetch(`${this.baseUrl}/workspace/archive`, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: {
+          "Content-Type": "application/json",
+          ...(projectId ? { "X-WebGME-Project-Id": projectId } : {}),
+        },
+        body: JSON.stringify({ projectId, workspaces, filename }),
+      });
+      if (!res.ok) {
+        let msg = `Archive download failed (${res.status})`;
+        try {
+          const errData = await res.json();
+          if (errData && errData.error) msg = errData.error;
+        } catch (_err) {
+          // ignore
+        }
+        throw new Error(msg);
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = String(filename || "project-artifacts").replace(/\.zip$/i, "") + ".zip";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+      return Number(res.headers.get("X-Archive-File-Count") || 0);
     }
 
     /**

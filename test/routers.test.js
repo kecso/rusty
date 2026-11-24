@@ -16,6 +16,7 @@ describe("Rusty WebGME Routers", () => {
   let baseUrl;
 
   before(async () => {
+    process.env.WEBGME_GIT_WORKSPACE_BACKEND = "memory";
     const app = express();
     const mockOpts = {
       gmeConfig: {
@@ -85,6 +86,11 @@ describe("Rusty WebGME Routers", () => {
     assert.match(html, /id="minimapSvg"/);
     assert.match(html, /id="btnSaveCodeEditor"/);
     assert.match(html, /id="btnCancelCodeEditor"/);
+    assert.doesNotMatch(html, /id="btnCommitCodeEditor"/);
+    assert.match(html, /id="workspaceStatusPill"/);
+    assert.match(html, /id="btnDownloadZip"/);
+    assert.match(html, /id="commitModal"/);
+    assert.match(html, /id="btnForceCommitWorkspace"/);
     assert.match(html, /id="linkProfile"[^>]*href="\/profile"[^>]*>User Profile<\/a>/);
     assert.doesNotMatch(html, /id="linkProfile"[^>]*github\.com/);
     assert.match(html, /id="btnConnectRepo"[^>]*>Connect Git Repository…<\/button>/);
@@ -122,15 +128,48 @@ describe("Rusty WebGME Routers", () => {
     const appJs = await appJsRes.text();
     assert.match(appJs, /btnPickTransitionOnDiagram/);
     assert.match(appJs, /URLSearchParams/);
+    assert.match(appJs, /syncMachineArtifactsToWorkspace/);
   });
 
-  it("serves native webgme-git GitRouter /status", async () => {
+  it("serves native webgme-git GitRouter /status and local hybrid workspace + ZIP export", async () => {
     const res = await fetch(`${baseUrl}/routers/gitrouter/status`);
     assert.equal(res.status, 200);
     const data = await res.json();
     assert.equal(typeof data.githubAppConfigured, "boolean");
     assert.equal(data.profileUrl, "/profile");
     assert.equal(data.connectUrl, "/profile/github/connect");
+
+    const patchRes = await fetch(`${baseUrl}/routers/gitrouter/workspace/ops`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        mode: "local",
+        projectId: "guest+RustyDemo",
+        webgmeBranch: "master",
+        repo: "blinky-controller",
+        ops: [
+          { op: "write", path: "Cargo.toml", content: '[package]\nname = "blinky-controller"\n' },
+          { op: "write", path: "src/states/idle.rs", content: "pub fn on_enter() {}\n" },
+        ],
+      }),
+    });
+    assert.equal(patchRes.status, 200);
+    const patchJson = await patchRes.json();
+    assert.equal(patchJson.dirtyCount, 2);
+
+    const zipRes = await fetch(`${baseUrl}/routers/gitrouter/workspace/archive`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        projectId: "guest+RustyDemo",
+        filename: "blinky-bundle",
+      }),
+    });
+    assert.equal(zipRes.status, 200);
+    assert.equal(zipRes.headers.get("content-type"), "application/zip");
+    assert.equal(zipRes.headers.get("x-archive-file-count"), "2");
+    const buf = Buffer.from(await zipRes.arrayBuffer());
+    assert.equal(buf.readUInt32LE(0), 0x04034b50); // ZIP local header
   });
 
   it("verifies and runs BlinkyController via RustSimRouter /check and /run", async () => {
@@ -162,6 +201,17 @@ describe("Rusty WebGME Routers", () => {
     assert.equal(run.trace[1].to, "LedOn");
     assert.equal(run.trace[2].to, "LedOff");
     assert.equal(run.trace[3].to, "Idle");
+
+    // Verify RustSimRouter /check accepts virtual workspace { files } directly
+    const { generateCrateFiles } = require("../src/common/rustCodegen");
+    const filesCheckRes = await fetch(`${baseUrl}/routers/rustsim/check`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ files: generateCrateFiles(model) }),
+    });
+    assert.equal(filesCheckRes.status, 200);
+    const filesCheck = await filesCheckRes.json();
+    assert.equal(filesCheck.ok, true);
   });
 
   it("validates default, dev, and prod configurations with Layer 1/Layer 2 wiring", () => {
