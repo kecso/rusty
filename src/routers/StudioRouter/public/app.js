@@ -3077,6 +3077,7 @@
       try {
         const count = await gitClient.downloadArchiveZip({
           projectId: bridge.projectId || "default",
+          webgmeBranch: bridge.branchName || "master",
           workspaces,
           filename: rawName,
         });

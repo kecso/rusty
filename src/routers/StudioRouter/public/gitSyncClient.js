@@ -192,7 +192,12 @@
       return data;
     }
 
-    async downloadArchiveZip({ projectId, workspaces = null, filename = "project-artifacts" } = {}) {
+    async downloadArchiveZip({
+      projectId,
+      webgmeBranch = "master",
+      workspaces = null,
+      filename = "project-artifacts",
+    } = {}) {
       const res = await fetch(`${this.baseUrl}/workspace/archive`, {
         method: "POST",
         credentials: "same-origin",
@@ -200,7 +205,7 @@
           "Content-Type": "application/json",
           ...(projectId ? { "X-WebGME-Project-Id": projectId } : {}),
         },
-        body: JSON.stringify({ projectId, workspaces, filename }),
+        body: JSON.stringify({ projectId, webgmeBranch, workspaces, filename }),
       });
       if (!res.ok) {
         let msg = `Archive download failed (${res.status})`;
