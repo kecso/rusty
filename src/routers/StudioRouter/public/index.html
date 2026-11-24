@@ -600,6 +600,14 @@
           <span>Commit Message</span>
           <input id="commitMessageInput" type="text" placeholder="Describe this semantic change..." />
         </label>
+        <div id="commitUpstreamBox" class="commit-upstream-box hidden">
+          <div class="commit-upstream-head">
+            <span id="commitUpstreamSummary"></span>
+            <button id="btnAcceptUpstreamBase" class="btn btn-xs btn-primary" title="Reload non-overlapping files and advance the pinned base commit to remote HEAD">↓ Accept Upstream &amp; Advance Pin</button>
+          </div>
+          <ul id="commitUpstreamFiles" class="commit-upstream-files"></ul>
+          <div id="commitUpstreamOverlapWarn" class="muted-mono hidden"></div>
+        </div>
         <div id="commitValidationBox" class="commit-validation-box">Checking crate validation…</div>
         <div class="commit-review-grid">
           <div>
@@ -651,9 +659,9 @@
   <script src="/routers/studio/common/rustAnalyzer.js"></script>
   <script src="/routers/studio/common/rustLayout.js"></script>
   <script src="/routers/studio/common/rustImporter.js"></script>
-  <!-- Rusty Studio Modules -->
+  <!-- Shared webgme-git Client SDK & Rusty Studio Modules -->
+  <script src="/routers/gitrouter/client/workspaceClient.js"></script>
   <script src="/routers/studio/webgmeBridge.js"></script>
-  <script src="/routers/studio/gitSyncClient.js"></script>
   <script src="/routers/studio/monacoStateEditor.js"></script>
   <script src="/routers/studio/canvasView.js"></script>
   <script src="/routers/studio/app.js"></script>

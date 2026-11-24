@@ -105,6 +105,17 @@ describe("Rusty WebGME Routers", () => {
     assert.match(html, /data-trans-tab="action"/);
     assert.doesNotMatch(html, /id="inpTransPriority"/);
     assert.doesNotMatch(html, /id="btnPull(All|State|CodeEditor)"/);
+    assert.doesNotMatch(html, /gitSyncClient\.js/);
+    assert.match(html, /\/routers\/gitrouter\/client\/workspaceClient\.js/);
+    assert.match(html, /id="commitUpstreamBox"/);
+    assert.match(html, /id="btnAcceptUpstreamBase"/);
+
+    const sdkRes = await fetch(`${baseUrl}/routers/gitrouter/client/workspaceClient.js`);
+    assert.equal(sdkRes.status, 200);
+    assert.match(sdkRes.headers.get("content-type"), /javascript/);
+    const sdkJs = await sdkRes.text();
+    assert.match(sdkJs, /class WorkspaceClient/);
+    assert.match(sdkJs, /class WorkspaceSession/);
 
     const guardRes = await fetch(`${baseUrl}/routers/studio/common/rustGuardLang.js`);
     assert.equal(guardRes.status, 200);
@@ -131,7 +142,10 @@ describe("Rusty WebGME Routers", () => {
     const appJs = await appJsRes.text();
     assert.match(appJs, /btnPickTransitionOnDiagram/);
     assert.match(appJs, /URLSearchParams/);
+    assert.match(appJs, /WorkspaceSession/);
+    assert.match(appJs, /acceptUpstreamAndAdvancePin/);
     assert.match(appJs, /syncIncrementalWorkspaceOps/);
+    assert.doesNotMatch(appJs, /GitSyncClient/);
     assert.equal(GitRouter.getWorkspaceManager().validators.has("rusty-cargo-check"), true);
   });
 

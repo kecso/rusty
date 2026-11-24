@@ -2,7 +2,8 @@
   "use strict";
 
   const bridge = new window.WebGMEBridge();
-  const gitClient = new window.GitSyncClient("/routers/gitrouter");
+  const { WorkspaceClient, WorkspaceSession, buildWorkspaceKey } = window.WebGMEGit || {};
+  const gitClient = new WorkspaceClient("/routers/gitrouter");
   const {
     RustyContract,
     RustyGuardLang,
@@ -50,10 +51,7 @@
     // Hybrid commit-pinned Git workspace state
     workspaceStatus: null,
     workspaceStatusByMachineId: new Map(),
-    workspaceFilesByKey: new Map(),
-    loadingWorkspaceKeys: new Set(),
-    syncedMachineKeys: new Set(),
-    workspaceQueue: Promise.resolve(),
+    workspaceSessions: new Map(),
     commitReviewStatus: null,
     commitValidationErrors: [],
   };
@@ -121,10 +119,8 @@
 
   function hydrateMachineFromWorkspace(rawMachine) {
     if (!rawMachine) return null;
-    const params = workspaceParamsForMachine(rawMachine);
-    const keyTag = workspaceKeyTag(params);
-    const wsEntry = state.workspaceFilesByKey.get(keyTag);
-    const files = wsEntry && wsEntry.files ? wsEntry.files : null;
+    const session = getExistingSessionForMachine(rawMachine);
+    const files = session && session.loaded ? session.files : null;
     if (!files) {
       return rawMachine;
     }
@@ -1343,12 +1339,43 @@
 
   function workspaceKeyTag(params) {
     if (!params) return "";
-    return `${params.projectId}::${params.webgmeBranch}::${params.mode}::${params.owner}/${params.repo}::${params.rootPath || ""}`;
+    return buildWorkspaceKey(params);
   }
 
-  function enqueueWorkspaceTask(taskFn) {
-    state.workspaceQueue = state.workspaceQueue.then(taskFn, taskFn);
-    return state.workspaceQueue;
+  function rustyWorkspaceFileFilter(relPath) {
+    return relPath === "Cargo.toml" || (relPath.startsWith("src/") && relPath.endsWith(".rs"));
+  }
+
+  function getExistingSessionForMachine(machine) {
+    if (!machine) return null;
+    const params = workspaceParamsForMachine(machine);
+    const keyTag = workspaceKeyTag(params);
+    return keyTag ? state.workspaceSessions.get(keyTag) || null : null;
+  }
+
+  function getSessionForMachine(machine) {
+    if (!machine) return null;
+    const params = workspaceParamsForMachine(machine);
+    const keyTag = workspaceKeyTag(params);
+    if (!keyTag) return null;
+    let session = state.workspaceSessions.get(keyTag);
+    if (session) {
+      session.updateParams(params);
+      session._machineId = machine.id;
+      return session;
+    }
+    session = new WorkspaceSession(gitClient, params, { fileFilter: rustyWorkspaceFileFilter });
+    session._machineId = machine.id;
+    session.on("status", (status) => {
+      state.workspaceStatusByMachineId.set(session._machineId, status);
+      const curRaw = rawActiveMachine();
+      if (curRaw && curRaw.id === session._machineId) {
+        state.workspaceStatus = status;
+        renderWorkspaceStatusPill();
+      }
+    });
+    state.workspaceSessions.set(keyTag, session);
+    return session;
   }
 
   function renderWorkspaceStatusPill() {
@@ -1387,46 +1414,27 @@
   }
 
   async function refreshWorkspaceStatus(m, checkRemote = false) {
-    const params = workspaceParamsForMachine(m);
-    if (!params) return null;
+    const session = getSessionForMachine(m);
+    if (!session) return null;
     try {
-      const status = await gitClient.getWorkspaceStatus(params, {
-        checkRemote: Boolean(checkRemote && params.mode === "github" && state.gitStatus.hasGithubToken),
-        includeDiff: false,
-      });
-      state.workspaceStatusByMachineId.set(m.id, status);
-      if (activeMachine() && activeMachine().id === m.id) {
-        state.workspaceStatus = status;
-        renderWorkspaceStatusPill();
-      }
-      return status;
+      const canRemote = Boolean(checkRemote && session.params.mode === "github" && state.gitStatus.hasGithubToken);
+      return await session.refreshStatus({ checkRemote: canRemote, includeDiff: false });
     } catch (_err) {
       return null;
     }
   }
 
   function writeMachineFileToLocalWorkspaceCache(machine, relPath, content) {
-    if (!machine || !relPath) return;
-    const params = workspaceParamsForMachine(machine);
-    const keyTag = workspaceKeyTag(params);
-    if (!keyTag) return;
-    let entry = state.workspaceFilesByKey.get(keyTag);
-    if (!entry) {
-      entry = { files: {}, loaded: true };
-      state.workspaceFilesByKey.set(keyTag, entry);
+    const session = getSessionForMachine(machine);
+    if (session && relPath) {
+      session.setLocalFile(relPath, content);
     }
-    entry.files[relPath] = content;
-    entry.loaded = true;
   }
 
   function removeMachineFileFromLocalWorkspaceCache(machine, relPath) {
-    if (!machine || !relPath) return;
-    const params = workspaceParamsForMachine(machine);
-    const keyTag = workspaceKeyTag(params);
-    if (!keyTag) return;
-    const entry = state.workspaceFilesByKey.get(keyTag);
-    if (entry && entry.files) {
-      delete entry.files[relPath];
+    const session = getExistingSessionForMachine(machine);
+    if (session && relPath) {
+      session.deleteLocalFile(relPath);
     }
   }
 
@@ -1499,144 +1507,69 @@
   }
 
   function syncIncrementalWorkspaceOps(machine, opts = {}) {
-    const params = workspaceParamsForMachine(machine);
-    if (!params) return Promise.resolve(null);
-    const keyTag = workspaceKeyTag(params);
+    const session = getSessionForMachine(machine);
+    if (!session) return Promise.resolve(null);
     const relFiles = buildIncrementalFiles(machine, opts);
     const ops = buildWorkspaceOpsPayload(machine, relFiles, opts.extraOps || []);
     if (ops.length === 0) return Promise.resolve(null);
-
-    return enqueueWorkspaceTask(async () => {
-      try {
-        await gitClient.patchWorkspaceOps(params, ops);
-        state.syncedMachineKeys.add(keyTag);
-        return await refreshWorkspaceStatus(machine, false);
-      } catch (_err) {
-        return null;
-      }
-    });
+    return session.patchOps(ops, { refreshStatus: true, checkRemote: false }).catch(() => null);
   }
 
-  async function loadWorkspaceFilesForMachine(rawMachine) {
-    const params = workspaceParamsForMachine(rawMachine);
-    if (!params) return null;
-    const keyTag = workspaceKeyTag(params);
-    if (state.loadingWorkspaceKeys.has(keyTag)) return null;
-    state.loadingWorkspaceKeys.add(keyTag);
-
-    try {
-      let entries = [];
-      try {
-        const tree = await gitClient.getWorkspaceTree(params, params.rootPath);
-        entries = tree && Array.isArray(tree.entries) ? tree.entries : [];
-      } catch (_err) {
-        entries = [];
+  function refreshActiveEditorSessionFromModel() {
+    if (!state.codeEditorSession || state.codeEditorSession.dirty) return;
+    const curHydrated = activeMachine();
+    const sess = state.codeEditorSession;
+    if (curHydrated && sess.mode === "state-hook") {
+      const st = curHydrated.states.find((s) => s.id === sess.stateId);
+      if (st) {
+        sess.draftEntry = st.entryCode || "";
+        sess.draftExit = st.exitCode || "";
+        loadCenterEditorFromSession();
       }
-
-      const prefix = params.rootPath ? `${params.rootPath.replace(/\/+$/, "")}/` : "";
-      const files = {};
-      const targetEntries = entries.filter((e) => {
-        const rel = prefix && e.path.startsWith(prefix) ? e.path.slice(prefix.length) : e.path;
-        return rel === "Cargo.toml" || (rel.startsWith("src/") && rel.endsWith(".rs"));
-      });
-
-      await Promise.all(
-        targetEntries.map(async (entry) => {
-          try {
-            const f = await gitClient.readWorkspaceFile(params, entry.path);
-            const rel = prefix && entry.path.startsWith(prefix) ? entry.path.slice(prefix.length) : entry.path;
-            files[rel] = f.content;
-          } catch (_err) {
-            // Skip unreadable entry cleanly
-          }
-        }),
-      );
-
-      if (Object.keys(files).length === 0 && params.mode === "local") {
-        const seeded = starterHooksForMachine(rawMachine);
-        const crateFiles = RustyCodegen.generateCrateFiles(seeded);
-        state.workspaceFilesByKey.set(keyTag, { files: crateFiles, loaded: true });
-        const ops = buildWorkspaceOpsPayload(seeded, crateFiles);
-        if (ops.length > 0) {
-          try {
-            await gitClient.patchWorkspaceOps(params, ops);
-          } catch (_err) {
-            // Leave local cache populated even if background write fails
-          }
-        }
-      } else {
-        state.workspaceFilesByKey.set(keyTag, { files, loaded: true });
+    } else if (curHydrated && sess.mode === "transition-action") {
+      const tr = curHydrated.transitions.find((t) => t.id === sess.transitionId);
+      if (tr) {
+        sess.draftAction = tr.action || "";
+        loadCenterEditorFromSession();
       }
-
-      state.syncedMachineKeys.add(keyTag);
-      const curRaw = rawActiveMachine();
-      if (curRaw && curRaw.id === rawMachine.id) {
-        rebuildSimulation(false);
-        renderAll();
-        if (state.codeEditorSession && !state.codeEditorSession.dirty) {
-          const curHydrated = activeMachine();
-          const sess = state.codeEditorSession;
-          if (curHydrated && sess.mode === "state-hook") {
-            const st = curHydrated.states.find((s) => s.id === sess.stateId);
-            if (st) {
-              sess.draftEntry = st.entryCode || "";
-              sess.draftExit = st.exitCode || "";
-              loadCenterEditorFromSession();
-            }
-          } else if (curHydrated && sess.mode === "transition-action") {
-            const tr = curHydrated.transitions.find((t) => t.id === sess.transitionId);
-            if (tr) {
-              sess.draftAction = tr.action || "";
-              loadCenterEditorFromSession();
-            }
-          }
-        }
-      }
-      return await refreshWorkspaceStatus(rawMachine, params.mode === "github");
-    } finally {
-      state.loadingWorkspaceKeys.delete(keyTag);
     }
   }
 
   function ensureMachineWorkspaceReady(rawMachine) {
-    if (!rawMachine) return Promise.resolve(null);
-    const params = workspaceParamsForMachine(rawMachine);
-    if (!params) return Promise.resolve(null);
-    const keyTag = workspaceKeyTag(params);
-    const existing = state.workspaceFilesByKey.get(keyTag);
-    if (state.syncedMachineKeys.has(keyTag) && existing && existing.loaded) {
-      return Promise.resolve(state.workspaceStatusByMachineId.get(rawMachine.id) || null);
+    const session = getSessionForMachine(rawMachine);
+    if (!session) return Promise.resolve(null);
+    if (session.loaded) {
+      return Promise.resolve(session.status || state.workspaceStatusByMachineId.get(rawMachine.id) || null);
     }
-    if (state.loadingWorkspaceKeys.has(keyTag)) {
-      return Promise.resolve(state.workspaceStatusByMachineId.get(rawMachine.id) || null);
-    }
-    state.syncedMachineKeys.add(keyTag);
-    return enqueueWorkspaceTask(() => loadWorkspaceFilesForMachine(rawMachine));
+    const canRemote = Boolean(session.params.mode === "github" && state.gitStatus.hasGithubToken);
+    return session
+      .load({
+        checkRemote: canRemote,
+        seedIfEmpty: () => RustyCodegen.generateCrateFiles(starterHooksForMachine(rawMachine)),
+      })
+      .then(() => {
+        const curRaw = rawActiveMachine();
+        if (curRaw && curRaw.id === rawMachine.id) {
+          rebuildSimulation(false);
+          renderAll();
+          refreshActiveEditorSessionFromModel();
+        }
+        return session.status;
+      })
+      .catch(() => null);
   }
 
   async function readVirtualCrateFilesForCheck(machine) {
-    await state.workspaceQueue.catch(() => {});
-    const params = workspaceParamsForMachine(machine);
-    if (!params) return RustyCodegen.generateCrateFiles(machine);
+    const session = getSessionForMachine(machine);
+    if (!session) return RustyCodegen.generateCrateFiles(machine);
     try {
-      const tree = await gitClient.getWorkspaceTree(params, params.rootPath);
-      const prefix = params.rootPath ? `${params.rootPath.replace(/\/+$/, "")}/` : "";
-      const targetEntries = (tree.entries || []).filter((e) => {
-        const rel = prefix && e.path.startsWith(prefix) ? e.path.slice(prefix.length) : e.path;
-        return rel === "Cargo.toml" || (rel.startsWith("src/") && rel.endsWith(".rs"));
-      });
-      if (targetEntries.length === 0) {
-        return RustyCodegen.generateCrateFiles(machine);
+      await session.flush();
+      if (!session.loaded) {
+        await session.load({ checkRemote: false });
       }
-      const files = {};
-      await Promise.all(
-        targetEntries.map(async (entry) => {
-          const f = await gitClient.readWorkspaceFile(params, entry.path);
-          const rel = prefix && entry.path.startsWith(prefix) ? entry.path.slice(prefix.length) : entry.path;
-          files[rel] = f.content;
-        }),
-      );
-      return Object.keys(files).length > 0 ? files : RustyCodegen.generateCrateFiles(machine);
+      return Object.keys(session.files).length > 0
+        ? { ...session.files }
+        : RustyCodegen.generateCrateFiles(machine);
     } catch (_err) {
       return RustyCodegen.generateCrateFiles(machine);
     }
@@ -2550,14 +2483,117 @@
     return { count: matches.length, stateIds: affectedStateIds };
   }
 
+  function renderCommitUpstreamBox(wsRes) {
+    const box = $("commitUpstreamBox");
+    if (!box) return;
+    const up = wsRes && wsRes.upstreamChanges;
+    const isBehind = Boolean(wsRes && (wsRes.syncState === "behind" || wsRes.syncState === "diverged"));
+    if (!isBehind || !wsRes.remoteHeadSha) {
+      box.classList.add("hidden");
+      return;
+    }
+    box.classList.remove("hidden");
+    box.classList.toggle("diverged", wsRes.syncState === "diverged");
+
+    const fileCount = up ? up.totalCount : 0;
+    const headShort = wsRes.remoteHeadSha.slice(0, 7);
+    const pinShort = wsRes.baseCommitSha ? wsRes.baseCommitSha.slice(0, 7) : "HEAD";
+    $("commitUpstreamSummary").innerHTML =
+      `<strong>${wsRes.syncState === "diverged" ? "⚠ Upstream moved while you have pending deltas" : "↓ Upstream moved ahead"}</strong> ` +
+      `(${escapeHtml(pinShort)} → ${escapeHtml(headShort)}${up ? ` · ${fileCount} file(s) changed under crate root` : ""})`;
+
+    const listEl = $("commitUpstreamFiles");
+    listEl.innerHTML = "";
+    for (const f of (up && up.files) || []) {
+      const li = document.createElement("li");
+      const badge = f.overlapsOverlay ? `${f.status} · overlaps local` : f.status;
+      li.innerHTML =
+        `<span>${escapeHtml(f.previousPath ? `${f.path} ← ${f.previousPath}` : f.path)}</span>` +
+        `<span class="commit-badge commit-badge-${escapeHtml(f.overlapsOverlay ? "deleted" : f.status)}">${escapeHtml(badge)}</span>`;
+      listEl.appendChild(li);
+    }
+
+    const overlapCount = up && up.overlappingWithOverlay ? up.overlappingWithOverlay.length : 0;
+    const warnEl = $("commitUpstreamOverlapWarn");
+    if (overlapCount > 0) {
+      warnEl.classList.remove("hidden");
+      warnEl.textContent = `${overlapCount} file(s) overlap with your local overlay — advancing the pin keeps your local edits layered on top of ${headShort}.`;
+    } else {
+      warnEl.classList.add("hidden");
+      warnEl.textContent = "";
+    }
+  }
+
+  async function acceptUpstreamAndAdvancePin() {
+    const m = activeMachine();
+    if (!m || !m.gitOwner || !m.gitRepo) return;
+    const session = getSessionForMachine(m);
+    const wsRes = state.commitReviewStatus || (session && session.status);
+    const overlapping =
+      (wsRes && wsRes.upstreamChanges && wsRes.upstreamChanges.overlappingWithOverlay) || [];
+    if (
+      overlapping.length > 0 &&
+      !window.confirm(
+        `${overlapping.length} upstream-changed file(s) also have uncommitted local edits. Advance the base commit pin anyway (keeping your local edits layered on top)?`,
+      )
+    ) {
+      return;
+    }
+
+    const btn = $("btnAcceptUpstreamBase");
+    if (btn) btn.disabled = true;
+    $("commitModalStatus").textContent = "Advancing base commit pin & reloading upstream files…";
+    try {
+      const rebased = await session.rebaseBase({
+        newBaseCommitSha: wsRes && wsRes.remoteHeadSha ? wsRes.remoteHeadSha : undefined,
+        targetBranch: m.gitBranch || "main",
+        resolveRemote: !(wsRes && wsRes.remoteHeadSha),
+        reload: true,
+      });
+
+      const nextSha = rebased.baseCommitSha;
+      const hydrated = hydrateMachineFromWorkspace(rawActiveMachine());
+      if (hydrated && nextSha) {
+        bridge.runTransaction(`Accept upstream ${nextSha.slice(0, 7)} & re-index deps`, () => {
+          bridge.client.setAttribute(hydrated.id, "gitBaseCommitSha", nextSha);
+          for (const st of hydrated.states || []) {
+            bridge.client.setAttribute(st.id, "gitBaseCommitSha", nextSha);
+            const deps = RustyAnalyzer.extractDependencies(`${st.entryCode || ""}\n${st.exitCode || ""}`, hydrated);
+            bridge._applyDepsInsideTx(st.id, deps.memberIds, RustyAnalyzer.serializeDepsSnapshot(deps.snapshot));
+          }
+          for (const tr of hydrated.transitions || []) {
+            const deps = RustyAnalyzer.extractDependencies("", hydrated, {
+              triggerEvent: tr.event,
+              guardText: tr.guard || "",
+              actionText: tr.action || "",
+            });
+            bridge._applyDepsInsideTx(tr.id, deps.memberIds, RustyAnalyzer.serializeDepsSnapshot(deps.snapshot));
+          }
+        });
+      }
+
+      rebuildSimulation(false);
+      renderAll();
+      refreshActiveEditorSessionFromModel();
+      toast(`Advanced base commit pin → ${nextSha ? nextSha.slice(0, 7) : "HEAD"}`, "ok");
+      await openCommitModal();
+    } catch (err) {
+      $("commitModalStatus").textContent = `Rebase failed: ${err.message}`;
+      toast(`Accept upstream failed: ${err.message}`, "err");
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
   async function openCommitModal() {
     const m = activeMachine();
     if (!m || !m.gitOwner || !m.gitRepo) {
       toast("Connect a Git repository first to commit & push", "warn");
       return;
     }
-    await state.workspaceQueue.catch(() => {});
-    const params = workspaceParamsForMachine(m);
+    const session = getSessionForMachine(m);
+    await session.flush();
+    const params = session.params;
     $("commitRepoSummary").value = `${m.gitOwner}/${m.gitRepo} @ ${m.gitBaseCommitSha ? m.gitBaseCommitSha.slice(0, 12) : "HEAD"}`;
     $("commitTargetBranch").value = m.gitBranch || "main";
     $("chkCreateTargetBranch").checked = false;
@@ -2568,6 +2604,7 @@
     $("commitDiffPreview").textContent = "";
     $("commitDiffPath").textContent = "-";
     $("commitChangeCount").textContent = "0";
+    if ($("commitUpstreamBox")) $("commitUpstreamBox").classList.add("hidden");
     $("btnForceCommitWorkspace").classList.add("hidden");
     $("btnConfirmCommitWorkspace").disabled = true;
     $("commitModal").classList.remove("hidden");
@@ -2582,6 +2619,16 @@
         : Promise.resolve([]),
       readVirtualCrateFilesForCheck(m),
     ]);
+
+    if (wsRes && !wsRes.error) {
+      session.status = wsRes;
+      state.workspaceStatusByMachineId.set(m.id, wsRes);
+      if (rawActiveMachine() && rawActiveMachine().id === m.id) {
+        state.workspaceStatus = wsRes;
+        renderWorkspaceStatusPill();
+      }
+    }
+    renderCommitUpstreamBox(wsRes);
 
     if (branchDl && Array.isArray(refsRes)) {
       for (const rf of refsRes) {
@@ -2701,7 +2748,8 @@
     $("btnForceCommitWorkspace").disabled = true;
 
     try {
-      const res = await gitClient.commitWorkspace(params, {
+      const session = getSessionForMachine(m);
+      const res = await session.commit({
         branch,
         message,
         force,
@@ -3270,6 +3318,7 @@
     });
 
     $("btnPushCrate").addEventListener("click", openCommitModal);
+    $("btnAcceptUpstreamBase").addEventListener("click", acceptUpstreamAndAdvancePin);
     $("btnConfirmCommitWorkspace").addEventListener("click", () => submitWorkspaceCommit(false));
     $("btnForceCommitWorkspace").addEventListener("click", () => submitWorkspaceCommit(true));
     $("btnDiscardWorkspace").addEventListener("click", async () => {
@@ -3277,16 +3326,12 @@
       if (!m) return;
       if (!window.confirm(`Discard all uncommitted Git workspace deltas for ${m.name}?`)) return;
       try {
-        const params = workspaceParamsForMachine(m);
-        const keyTag = workspaceKeyTag(params);
-        await gitClient.discardWorkspace(params);
-        if (keyTag) {
-          state.workspaceFilesByKey.delete(keyTag);
-          state.syncedMachineKeys.delete(keyTag);
-        }
+        const session = getSessionForMachine(m);
+        await session.discard(null, { reload: true });
         $("commitModal").classList.add("hidden");
-        const rawM = rawActiveMachine();
-        if (rawM) await ensureMachineWorkspaceReady(rawM);
+        rebuildSimulation(false);
+        renderAll();
+        refreshActiveEditorSessionFromModel();
         toast("Discarded uncommitted workspace changes", "ok");
       } catch (err) {
         toast(`Discard failed: ${err.message}`, "err");
@@ -3295,18 +3340,17 @@
 
     $("btnDownloadZip").addEventListener("click", async () => {
       if (!state.machines.length) return;
-      await state.workspaceQueue.catch(() => {});
       await Promise.all(state.machines.map((machine) => ensureMachineWorkspaceReady(machine)));
       const workspaces = state.machines.map(workspaceParamsForMachine);
       const rawName = (bridge.projectId || "rusty-artifacts").replace(/\+/g, "-");
       try {
-        const count = await gitClient.downloadArchiveZip({
+        const { fileCount } = await gitClient.downloadArchiveZip({
           projectId: bridge.projectId || "default",
           webgmeBranch: bridge.branchName || "master",
           workspaces,
           filename: rawName,
         });
-        toast(`Downloaded ${rawName}.zip (${count} file(s))`, "ok");
+        toast(`Downloaded ${rawName}.zip (${fileCount} file(s))`, "ok");
       } catch (err) {
         toast(`ZIP download failed: ${err.message}`, "err");
       }
@@ -3372,18 +3416,24 @@
       try {
         let res;
         if (ctx.params) {
-          await gitClient.patchWorkspaceOps(ctx.params, [
+          const curM = activeMachine();
+          const session = curM ? getSessionForMachine(curM) : new WorkspaceSession(gitClient, ctx.params, { fileFilter: rustyWorkspaceFileFilter });
+          await session.patchOps([
             { op: "write", path: conflict.path, content: resolved, mode: "100644" },
           ]);
-          await gitClient.rebaseWorkspaceBase(ctx.params, body.currentHeadSha, ctx.branch);
-          res = await gitClient.commitWorkspace(ctx.params, {
+          await session.rebaseBase({
+            newBaseCommitSha: body.currentHeadSha,
+            targetBranch: ctx.branch,
+            reload: false,
+          });
+          res = await session.commit({
             branch: ctx.branch,
             message: `${ctx.message} (resolved merge conflict)`,
             force: Boolean(ctx.force),
             validationErrors: ctx.validationErrors || [],
           });
         } else {
-          res = await gitClient.commit({
+          res = await gitClient.commitDirect({
             owner: ctx.owner,
             repo: ctx.repo,
             branch: ctx.branch,
@@ -3593,6 +3643,12 @@
         dirPath: gitPath,
         ref: baseCommitSha || gitBranch,
         projectId: bridge.projectId,
+        filter(entry) {
+          if (entry.type === "file") {
+            return entry.name === "Cargo.toml" || (entry.name.endsWith(".rs") && !entry.name.startsWith("."));
+          }
+          return entry.type === "dir" && (entry.name === "src" || entry.name === "states");
+        },
       });
       const { model, summary } = RustyImporter.parseCrateFilesToModel(filesMap, {
         owner: gitOwner,
@@ -3622,10 +3678,9 @@
       $("repoModal").classList.add("hidden");
       const rawNext = rawActiveMachine();
       if (rawNext) {
-        const nextKeyTag = workspaceKeyTag(workspaceParamsForMachine(rawNext));
-        if (nextKeyTag) {
-          state.workspaceFilesByKey.set(nextKeyTag, { files: relFiles, loaded: true });
-          state.syncedMachineKeys.add(nextKeyTag);
+        const nextSession = getSessionForMachine(rawNext);
+        if (nextSession) {
+          nextSession.seedCache(relFiles);
         }
         rebuildSimulation(false);
         await refreshWorkspaceStatus(rawNext, true);

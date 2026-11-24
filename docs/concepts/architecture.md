@@ -14,13 +14,13 @@ Rusty avoids storing canonical source code in opaque binary database blobs. Inst
 |  - Globals (Min/ |  - Edge Tooltips        |  Exclusivity + Action |
 |    Max bounds)   |  - Auto-Refactor + Imp. |  Live Simulator       |
 +--------+--------------------+-------------------------+-----------+
-         | WebGME Client API  | webgme-git Workspace    | HTTP POST
+         | WebGME Client API  | webgme-git SDK (Session)| HTTP POST
          v                    v                         v
 +-----------------+  +--------------------+   +---------------------+
 | WebGME Server   |  | webgme-git         |   | RustSimRouter       |
 | Core + MongoDB  |  | gitrouter          |   | /routers/rustsim    |
 | (Design, Sets,  |  | In-Mem/JSON Overlay|   | Cargo Validator +   |
-|  Guards, Deps)  |  | Patch / Commit/ZIP |   | Temp Crate Sandbox  |
+|  Guards, Deps)  |  | Drift / Commit/ZIP |   | Temp Crate Sandbox  |
 +-----------------+  +--------------------+   +---------------------+
                               |                       ^
                               |  pre-push cargo check |
