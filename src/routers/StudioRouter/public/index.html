@@ -69,7 +69,6 @@
         <code id="machineRepoDisplay" class="repo-pill repo-local">Hybrid Local Workspace</code>
         <button id="workspaceStatusPill" class="badge badge-muted ws-status-pill" type="button" title="Review uncommitted workspace deltas &amp; remote sync status">● 0 pending</button>
         <button id="btnConnectRepo" class="btn btn-xs btn-primary" title="Connect and pin this machine to a GitHub repository commit (no branch lock-in)">Connect Git Repository…</button>
-        <button id="btnPullAll" class="btn btn-xs hidden" title="Pull latest state .rs files from GitHub">↓ Pull States</button>
       </div>
       <div class="gitbar-right">
         <button id="btnDownloadZip" class="btn btn-xs" title="Collect and download all artifacts in this project as a structured ZIP archive">↓ Download .zip</button>
@@ -189,12 +188,11 @@
                 <button type="button" class="hook-tab active" data-editor-hook="entry">Entry (on_enter)</button>
                 <button type="button" class="hook-tab" data-editor-hook="exit">Exit (on_exit)</button>
               </div>
-              <button id="btnPullCodeEditor" class="btn btn-xs hidden" title="Reload latest content from GitHub">↓ Reload from Git</button>
             </div>
             <div class="btn-row center-editor-actions">
               <span id="codeEditorDirtyHint" class="muted-mono"></span>
               <button id="btnCancelCodeEditor" class="btn btn-sm">Cancel</button>
-              <button id="btnSaveCodeEditor" class="btn btn-sm btn-primary" title="Save hook into WebGME + stage in Git Workspace (Cmd/Ctrl+S)">Save to Workspace (⌘S)</button>
+              <button id="btnSaveCodeEditor" class="btn btn-sm btn-primary" title="Save hook into webgme-git workspace &amp; update dependsOn metadata (Cmd/Ctrl+S)">Save to Workspace (⌘S)</button>
             </div>
           </div>
 
@@ -292,7 +290,6 @@
                 <span>Git File Location</span>
                 <div class="btn-row">
                   <span id="stateSyncBadge" class="badge badge-muted">Local Draft</span>
-                  <button id="btnPullState" class="btn btn-xs hidden" title="Reload latest content from GitHub">↓ Reload</button>
                 </div>
               </div>
               <div class="effective-git-row">

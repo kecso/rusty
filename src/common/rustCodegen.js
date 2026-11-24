@@ -545,6 +545,7 @@ fn main() {
     generateCrateFiles,
     generateCargoToml,
     generateTypesRs,
+    generateStatesModRs,
     generateMachineRs,
   };
 });

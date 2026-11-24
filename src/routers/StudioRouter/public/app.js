@@ -28,7 +28,6 @@
     connectSourceId: null,
     dirtyStateIds: new Set(),
     dirtyTransIds: new Set(),
-    fetchedStateIds: new Set(),
     activeCrateFile: "Cargo.toml",
     // Layout & UI visibility
     leftHidden: false,
@@ -51,6 +50,8 @@
     // Hybrid commit-pinned Git workspace state
     workspaceStatus: null,
     workspaceStatusByMachineId: new Map(),
+    workspaceFilesByKey: new Map(),
+    loadingWorkspaceKeys: new Set(),
     syncedMachineKeys: new Set(),
     workspaceQueue: Promise.resolve(),
     commitReviewStatus: null,
@@ -75,8 +76,112 @@
     toast("Surrounding module lines are generated and read-only — edit inside the highlighted hook body", "warn");
   }
 
-  function activeMachine() {
+  function rawActiveMachine() {
     return state.machines.find((m) => m.id === state.activeMachineId) || state.machines[0] || null;
+  }
+
+  function starterHooksForMachine(rawMachine) {
+    if (!rawMachine || (rawMachine.gitOwner && rawMachine.gitRepo)) {
+      return rawMachine;
+    }
+    let starter = null;
+    if (rawMachine.name === "BlinkyController") {
+      starter = RustyContract.getStarterBlinkyModel();
+    } else if (rawMachine.name === "SmartThermostat") {
+      starter = RustyContract.getSmartThermostatModel();
+    }
+    if (!starter) return rawMachine;
+
+    const starterStates = new Map((starter.states || []).map((s) => [s.name, s]));
+    const starterTrans = (starter.transitions || []).slice();
+    return {
+      ...rawMachine,
+      states: (rawMachine.states || []).map((st) => {
+        const match = starterStates.get(st.name);
+        if (!match) return st;
+        const hooks = RustyContract.getStateHookBodies(match);
+        return { ...st, entryCode: hooks.entryCode || "", exitCode: hooks.exitCode || "" };
+      }),
+      transitions: (rawMachine.transitions || []).map((tr) => {
+        const match =
+          starterTrans.find(
+            (t) =>
+              t.srcName === tr.srcName &&
+              t.dstName === tr.dstName &&
+              t.event === tr.event &&
+              t.name === tr.name,
+          ) ||
+          starterTrans.find(
+            (t) => t.srcName === tr.srcName && t.dstName === tr.dstName && t.event === tr.event,
+          );
+        return match ? { ...tr, action: match.action || "" } : tr;
+      }),
+    };
+  }
+
+  function hydrateMachineFromWorkspace(rawMachine) {
+    if (!rawMachine) return null;
+    const params = workspaceParamsForMachine(rawMachine);
+    const keyTag = workspaceKeyTag(params);
+    const wsEntry = state.workspaceFilesByKey.get(keyTag);
+    const files = wsEntry && wsEntry.files ? wsEntry.files : null;
+    if (!files) {
+      return rawMachine;
+    }
+
+    const actionsByTransitionKey = new Map();
+    const states = (rawMachine.states || []).map((st) => {
+      const rel = `src/states/${RustyContract.toSnakeCase(st.name)}.rs`;
+      const rsCode = files[rel];
+      if (typeof rsCode !== "string") {
+        return { ...st, entryCode: "", exitCode: "", code: "" };
+      }
+      const parsed = RustyContract.parseStateModuleRs(rsCode);
+      const hooks = RustyContract.resolveStateTransitionHooks(rawMachine, st);
+      for (const h of hooks) {
+        const trKey = RustyContract.transitionKey(h.transition);
+        actionsByTransitionKey.set(
+          trKey,
+          Object.hasOwn(parsed.actionsByFnName || {}, h.fnName)
+            ? parsed.actionsByFnName[h.fnName] || ""
+            : "",
+        );
+      }
+      return {
+        ...st,
+        entryCode: parsed.entryCode || "",
+        exitCode: parsed.exitCode || "",
+        code: rsCode,
+      };
+    });
+
+    const transitions = (rawMachine.transitions || []).map((tr) => {
+      const trKey = RustyContract.transitionKey(tr);
+      return {
+        ...tr,
+        action: actionsByTransitionKey.has(trKey) ? actionsByTransitionKey.get(trKey) : "",
+      };
+    });
+
+    return {
+      ...rawMachine,
+      states,
+      transitions,
+    };
+  }
+
+  function buildTempMachineWithTransitionOverride(m, targetTr, patch) {
+    if (!m || !targetTr) return m;
+    return {
+      ...m,
+      transitions: (m.transitions || []).map((t) =>
+        t.id === targetTr.id ? { ...t, ...patch } : t,
+      ),
+    };
+  }
+
+  function activeMachine() {
+    return hydrateMachineFromWorkspace(rawActiveMachine());
   }
 
   function selectedStateObj() {
@@ -343,7 +448,7 @@
         toast(`Created ${isSelf ? "self-transition" : "transition"} ${srcSt.name} → ${dstSt.name} (${eventName})`, "ok");
         selectTransitionForEditing(tid);
         const nextM = activeMachine();
-        if (nextM) syncMachineArtifactsToWorkspace(nextM);
+        if (nextM) syncIncrementalWorkspaceOps(nextM, { scope: "transition", stateIds: [srcId] });
       },
     });
   }
@@ -598,11 +703,9 @@
     return window.confirm("Discard unsaved code edits and return to the design?");
   }
 
-  function syncCodeEditorHeaderButtons(isConnected) {
+  function syncCodeEditorHeaderButtons(_isConnected) {
     const sess = state.codeEditorSession;
     if (!sess) return;
-    const showGit = Boolean(isConnected);
-    $("btnPullCodeEditor").classList.toggle("hidden", !(showGit && sess.mode === "state-hook"));
     $("btnSaveCodeEditor").textContent = "Save to Workspace (⌘S)";
     $("codeEditorDirtyHint").textContent = sess.dirty ? "Unsaved edits" : "";
   }
@@ -740,17 +843,6 @@
     renderAll();
     loadCenterEditorFromSession();
     if (centerCodeEditor && centerCodeEditor.editor) centerCodeEditor.editor.focus();
-
-    const eff = RustyContract.resolveStateGitLink(m, st);
-    if (
-      eff.gitOwner &&
-      eff.gitRepo &&
-      eff.gitPath &&
-      state.gitStatus.hasGithubToken &&
-      !state.fetchedStateIds.has(st.id)
-    ) {
-      await pullStateFromGitHub(st, { silentNotFound: true });
-    }
   }
 
   function openTransitionActionEditor(transitionId) {
@@ -846,19 +938,22 @@
       const updatedState = { ...st, entryCode, exitCode };
       const composed = RustyContract.composeStateModuleRs(m, updatedState).code;
       const deps = RustyAnalyzer.extractDependencies(`${entryCode}\n${exitCode}`, m);
+      const relPath = `src/states/${RustyContract.toSnakeCase(st.name)}.rs`;
 
-      bridge.updateStateHookAndCode(
+      writeMachineFileToLocalWorkspaceCache(m, relPath, composed);
+      bridge.syncNodeDependencies(
         st.id,
-        { entryCode, exitCode, codeCache: composed },
         deps.memberIds,
         RustyAnalyzer.serializeDepsSnapshot(deps.snapshot),
-        `Save ${st.name} (${sess.hookKind} hook & dependsOn)`,
+        `Update dependsOn for ${st.name} (${sess.hookKind} hook)`,
       );
 
       sess.dirty = false;
       state.dirtyStateIds.delete(st.id);
       const nextM = activeMachine();
-      if (nextM) syncMachineArtifactsToWorkspace(nextM);
+      if (nextM) {
+        syncIncrementalWorkspaceOps(nextM, { scope: "state-hook", stateIds: [st.id] });
+      }
 
       toast(`Saved ${st.name} hooks to workspace`, "ok");
       closeCodeEditorSession(true);
@@ -869,6 +964,9 @@
     if (!tr) return;
     const srcSt = m.states.find((s) => s.id === tr.srcId || s.name === tr.srcName);
     sess.draftAction = currentBody;
+    const hadActionBefore = Boolean(tr.action && tr.action.trim());
+    const hasActionNow = Boolean(currentBody && currentBody.trim());
+    const machineChanged = hadActionBefore !== hasActionNow;
 
     const liveName = ($("inpTransName") && $("inpTransName").value.trim()) || tr.name;
     const liveEvent = ($("inpTransEvent") && $("inpTransEvent").value.trim()) || tr.event;
@@ -889,19 +987,29 @@
       actionText: currentBody,
     });
 
+    if (srcSt) {
+      const relPath = `src/states/${RustyContract.toSnakeCase(srcSt.name)}.rs`;
+      writeMachineFileToLocalWorkspaceCache(tempMachine, relPath, composedSrc);
+    }
+
     bridge.updateTransitionAndDeps(
       tr.id,
-      { name: liveName, event: liveEvent, guard: liveGuard, reenter: liveReenter, action: currentBody },
+      { name: liveName, event: liveEvent, guard: liveGuard, reenter: liveReenter },
       deps.memberIds,
       RustyAnalyzer.serializeDepsSnapshot(deps.snapshot),
-      `Save Transition ${liveName} action & dependsOn`,
-      srcSt ? { stateId: srcSt.id, codeCache: composedSrc } : null,
+      `Save Transition ${liveName} design & dependsOn`,
     );
 
     sess.dirty = false;
     state.dirtyTransIds.delete(tr.id);
     const nextM = activeMachine();
-    if (nextM) syncMachineArtifactsToWorkspace(nextM);
+    if (nextM && srcSt) {
+      syncIncrementalWorkspaceOps(nextM, {
+        scope: "state-hook",
+        stateIds: [srcSt.id],
+        includeMachine: machineChanged,
+      });
+    }
 
     toast(`Saved transition action (${liveName}) to workspace`, "ok");
     closeCodeEditorSession(true);
@@ -1025,8 +1133,8 @@
       }
       rebuildSimulation(false);
       renderAll();
-      const curM = activeMachine();
-      if (curM) ensureMachineWorkspaceReady(curM);
+      const rawM = rawActiveMachine();
+      if (rawM) ensureMachineWorkspaceReady(rawM);
       if (state.codeEditorSession && !state.codeEditorSession.dirty) {
         const m = activeMachine();
         const sess = state.codeEditorSession;
@@ -1297,30 +1405,105 @@
     }
   }
 
-  function syncMachineArtifactsToWorkspace(machine, extraOps = []) {
+  function writeMachineFileToLocalWorkspaceCache(machine, relPath, content) {
+    if (!machine || !relPath) return;
     const params = workspaceParamsForMachine(machine);
-    if (!params) return Promise.resolve(null);
     const keyTag = workspaceKeyTag(params);
+    if (!keyTag) return;
+    let entry = state.workspaceFilesByKey.get(keyTag);
+    if (!entry) {
+      entry = { files: {}, loaded: true };
+      state.workspaceFilesByKey.set(keyTag, entry);
+    }
+    entry.files[relPath] = content;
+    entry.loaded = true;
+  }
 
-    const crateFiles = RustyCodegen.generateCrateFiles(machine);
-    const excludedPaths = new Set();
-    for (const op of extraOps || []) {
-      if (op.op === "delete" && op.path) excludedPaths.add(op.path);
-      if (op.op === "rename" && op.from) excludedPaths.add(op.from);
+  function removeMachineFileFromLocalWorkspaceCache(machine, relPath) {
+    if (!machine || !relPath) return;
+    const params = workspaceParamsForMachine(machine);
+    const keyTag = workspaceKeyTag(params);
+    if (!keyTag) return;
+    const entry = state.workspaceFilesByKey.get(keyTag);
+    if (entry && entry.files) {
+      delete entry.files[relPath];
+    }
+  }
+
+  function buildIncrementalFiles(machine, opts = {}) {
+    const scope = opts.scope || "full";
+    if (scope === "full") {
+      return RustyCodegen.generateCrateFiles(machine);
+    }
+    const files = {};
+    if (scope === "global") {
+      files["src/types.rs"] = RustyCodegen.generateTypesRs(machine);
+      if (opts.includeMachine) {
+        files["src/machine.rs"] = RustyCodegen.generateMachineRs(machine);
+      }
+    } else if (scope === "event") {
+      files["src/types.rs"] = RustyCodegen.generateTypesRs(machine);
+      files["src/machine.rs"] = RustyCodegen.generateMachineRs(machine);
+    } else if (scope === "state-add" || scope === "state-meta" || scope === "state-delete") {
+      files["src/states/mod.rs"] = RustyCodegen.generateStatesModRs(machine);
+      files["src/machine.rs"] = RustyCodegen.generateMachineRs(machine);
+    } else if (scope === "transition") {
+      files["src/machine.rs"] = RustyCodegen.generateMachineRs(machine);
+    } else if (scope === "state-hook" && opts.includeMachine) {
+      files["src/machine.rs"] = RustyCodegen.generateMachineRs(machine);
     }
 
+    for (const sid of opts.stateIds || []) {
+      const st = (machine.states || []).find((s) => s.id === sid);
+      if (st) {
+        const modName = RustyContract.toSnakeCase(st.name);
+        files[`src/states/${modName}.rs`] = RustyContract.composeStateModuleRs(machine, st).code;
+      }
+    }
+    return files;
+  }
+
+  function buildWorkspaceOpsPayload(machine, relFiles, extraOps = []) {
+    const prefix = workspaceParamsForMachine(machine)?.rootPath?.replace(/\/+$/, "") || "";
+    const toRel = (fullPath) =>
+      prefix && fullPath && fullPath.startsWith(`${prefix}/`) ? fullPath.slice(prefix.length + 1) : fullPath;
+
+    const excludedPaths = new Set();
     const ops = [];
     for (const op of extraOps || []) {
-      if (op.op === "rename" || op.op === "delete") ops.push(op);
+      if (op.op === "delete" && op.path) {
+        excludedPaths.add(op.path);
+        removeMachineFileFromLocalWorkspaceCache(machine, toRel(op.path));
+        ops.push(op);
+      } else if (op.op === "rename" && op.from) {
+        excludedPaths.add(op.from);
+        removeMachineFileFromLocalWorkspaceCache(machine, toRel(op.from));
+        if (op.to && typeof op.content === "string") {
+          writeMachineFileToLocalWorkspaceCache(machine, toRel(op.to), op.content);
+        }
+        ops.push(op);
+      }
     }
-    for (const [relPath, content] of Object.entries(crateFiles)) {
+
+    for (const [relPath, content] of Object.entries(relFiles || {})) {
+      writeMachineFileToLocalWorkspaceCache(machine, relPath, content);
       const fullPath = RustyContract.resolveCrateFilePath(machine, relPath);
       if (excludedPaths.has(fullPath)) continue;
       ops.push({ op: "write", path: fullPath, content, mode: "100644" });
     }
+
     for (const op of extraOps || []) {
       if (op.op === "write") ops.push(op);
     }
+    return ops;
+  }
+
+  function syncIncrementalWorkspaceOps(machine, opts = {}) {
+    const params = workspaceParamsForMachine(machine);
+    if (!params) return Promise.resolve(null);
+    const keyTag = workspaceKeyTag(params);
+    const relFiles = buildIncrementalFiles(machine, opts);
+    const ops = buildWorkspaceOpsPayload(machine, relFiles, opts.extraOps || []);
     if (ops.length === 0) return Promise.resolve(null);
 
     return enqueueWorkspaceTask(async () => {
@@ -1334,19 +1517,101 @@
     });
   }
 
-  function ensureMachineWorkspaceReady(machine) {
-    const params = workspaceParamsForMachine(machine);
+  async function loadWorkspaceFilesForMachine(rawMachine) {
+    const params = workspaceParamsForMachine(rawMachine);
+    if (!params) return null;
+    const keyTag = workspaceKeyTag(params);
+    if (state.loadingWorkspaceKeys.has(keyTag)) return null;
+    state.loadingWorkspaceKeys.add(keyTag);
+
+    try {
+      let entries = [];
+      try {
+        const tree = await gitClient.getWorkspaceTree(params, params.rootPath);
+        entries = tree && Array.isArray(tree.entries) ? tree.entries : [];
+      } catch (_err) {
+        entries = [];
+      }
+
+      const prefix = params.rootPath ? `${params.rootPath.replace(/\/+$/, "")}/` : "";
+      const files = {};
+      const targetEntries = entries.filter((e) => {
+        const rel = prefix && e.path.startsWith(prefix) ? e.path.slice(prefix.length) : e.path;
+        return rel === "Cargo.toml" || (rel.startsWith("src/") && rel.endsWith(".rs"));
+      });
+
+      await Promise.all(
+        targetEntries.map(async (entry) => {
+          try {
+            const f = await gitClient.readWorkspaceFile(params, entry.path);
+            const rel = prefix && entry.path.startsWith(prefix) ? entry.path.slice(prefix.length) : entry.path;
+            files[rel] = f.content;
+          } catch (_err) {
+            // Skip unreadable entry cleanly
+          }
+        }),
+      );
+
+      if (Object.keys(files).length === 0 && params.mode === "local") {
+        const seeded = starterHooksForMachine(rawMachine);
+        const crateFiles = RustyCodegen.generateCrateFiles(seeded);
+        state.workspaceFilesByKey.set(keyTag, { files: crateFiles, loaded: true });
+        const ops = buildWorkspaceOpsPayload(seeded, crateFiles);
+        if (ops.length > 0) {
+          try {
+            await gitClient.patchWorkspaceOps(params, ops);
+          } catch (_err) {
+            // Leave local cache populated even if background write fails
+          }
+        }
+      } else {
+        state.workspaceFilesByKey.set(keyTag, { files, loaded: true });
+      }
+
+      state.syncedMachineKeys.add(keyTag);
+      const curRaw = rawActiveMachine();
+      if (curRaw && curRaw.id === rawMachine.id) {
+        rebuildSimulation(false);
+        renderAll();
+        if (state.codeEditorSession && !state.codeEditorSession.dirty) {
+          const curHydrated = activeMachine();
+          const sess = state.codeEditorSession;
+          if (curHydrated && sess.mode === "state-hook") {
+            const st = curHydrated.states.find((s) => s.id === sess.stateId);
+            if (st) {
+              sess.draftEntry = st.entryCode || "";
+              sess.draftExit = st.exitCode || "";
+              loadCenterEditorFromSession();
+            }
+          } else if (curHydrated && sess.mode === "transition-action") {
+            const tr = curHydrated.transitions.find((t) => t.id === sess.transitionId);
+            if (tr) {
+              sess.draftAction = tr.action || "";
+              loadCenterEditorFromSession();
+            }
+          }
+        }
+      }
+      return await refreshWorkspaceStatus(rawMachine, params.mode === "github");
+    } finally {
+      state.loadingWorkspaceKeys.delete(keyTag);
+    }
+  }
+
+  function ensureMachineWorkspaceReady(rawMachine) {
+    if (!rawMachine) return Promise.resolve(null);
+    const params = workspaceParamsForMachine(rawMachine);
     if (!params) return Promise.resolve(null);
     const keyTag = workspaceKeyTag(params);
-    if (state.syncedMachineKeys.has(keyTag)) {
-      return Promise.resolve(state.workspaceStatusByMachineId.get(machine.id) || null);
+    const existing = state.workspaceFilesByKey.get(keyTag);
+    if (state.syncedMachineKeys.has(keyTag) && existing && existing.loaded) {
+      return Promise.resolve(state.workspaceStatusByMachineId.get(rawMachine.id) || null);
+    }
+    if (state.loadingWorkspaceKeys.has(keyTag)) {
+      return Promise.resolve(state.workspaceStatusByMachineId.get(rawMachine.id) || null);
     }
     state.syncedMachineKeys.add(keyTag);
-
-    if (params.mode === "github" && params.baseCommitSha) {
-      return enqueueWorkspaceTask(() => refreshWorkspaceStatus(machine, true));
-    }
-    return syncMachineArtifactsToWorkspace(machine);
+    return enqueueWorkspaceTask(() => loadWorkspaceFilesForMachine(rawMachine));
   }
 
   async function readVirtualCrateFilesForCheck(machine) {
@@ -1385,7 +1650,6 @@
       $("machineRepoDisplay").textContent = `Hybrid Local Store: local/${crateSlug}`;
       $("machineRepoDisplay").className = "repo-pill repo-local";
       $("btnConnectRepo").classList.toggle("hidden", !m);
-      $("btnPullAll").classList.add("hidden");
       $("btnPushCrate").classList.add("hidden");
     } else {
       const shortSha = m.gitBaseCommitSha ? ` @ ${m.gitBaseCommitSha.slice(0, 7)}` : " @ HEAD";
@@ -1393,7 +1657,6 @@
       $("machineRepoDisplay").textContent = `${m.gitOwner}/${m.gitRepo}${shortSha} → ${m.gitBranch || "main"} · ${rootDir}`;
       $("machineRepoDisplay").className = "repo-pill repo-connected";
       $("btnConnectRepo").classList.add("hidden");
-      $("btnPullAll").classList.remove("hidden");
       $("btnPushCrate").classList.remove("hidden");
     }
     $("btnDownloadZip").disabled = !m;
@@ -1580,11 +1843,18 @@
               `Update GlobalVar ${g.name}`,
             );
 
+            let refactorRes = { replacements: 0, stateIds: [], includeMachine: false };
             if (oldSnake && newSnake && oldSnake !== newSnake) {
-              offerGlobalRenameRefactoring(oldSnake, newSnake);
+              refactorRes = applyGlobalRenameRefactoring(oldSnake, newSnake);
             }
             const nextM = activeMachine();
-            if (nextM) syncMachineArtifactsToWorkspace(nextM);
+            if (nextM) {
+              syncIncrementalWorkspaceOps(nextM, {
+                scope: "global",
+                stateIds: refactorRes.stateIds,
+                includeMachine: refactorRes.includeMachine,
+              });
+            }
             toast(`Updated global ${nextName}`, "ok");
           },
         });
@@ -1593,7 +1863,7 @@
         e.stopPropagation();
         bridge.deleteNode(g.id, g.name);
         const nextM = activeMachine();
-        if (nextM) syncMachineArtifactsToWorkspace(nextM);
+        if (nextM) syncIncrementalWorkspaceOps(nextM, { scope: "global", stateIds: [] });
       });
       globalList.appendChild(li);
     }
@@ -1657,11 +1927,20 @@
               },
               `Update EventDef ${ev.name}`,
             );
+            let refactorRes = { count: 0, stateIds: [] };
             if (oldPascal && newPascal && oldPascal !== newPascal) {
-              offerEventRenameRefactoring(oldPascal, nextName);
+              refactorRes = applyEventRenameRefactoring(oldPascal, nextName);
+            } else if ((vals.payloadType || "") !== (ev.payloadType || "")) {
+              refactorRes.stateIds = Array.from(
+                new Set(
+                  (m.transitions || [])
+                    .filter((t) => RustyContract.toPascalCase(t.event || "") === newPascal && t.srcId)
+                    .map((t) => t.srcId),
+                ),
+              );
             }
             const nextM = activeMachine();
-            if (nextM) syncMachineArtifactsToWorkspace(nextM);
+            if (nextM) syncIncrementalWorkspaceOps(nextM, { scope: "event", stateIds: refactorRes.stateIds });
             toast(`Updated event ${nextName}`, "ok");
           },
         });
@@ -1670,7 +1949,7 @@
         e.stopPropagation();
         bridge.deleteNode(ev.id, ev.name);
         const nextM = activeMachine();
-        if (nextM) syncMachineArtifactsToWorkspace(nextM);
+        if (nextM) syncIncrementalWorkspaceOps(nextM, { scope: "event", stateIds: [] });
       });
       eventList.appendChild(li);
     }
@@ -1894,7 +2173,6 @@
         ? `${eff.gitOwner}/${eff.gitRepo}@${eff.gitBranch}:${eff.gitPath}`
         : eff.gitPath;
       $("stateShaDisplay").textContent = st.gitBaseCommitSha ? st.gitBaseCommitSha.slice(0, 12) : "none";
-      $("btnPullState").classList.toggle("hidden", !isConnected);
 
       if (state.dirtyStateIds.has(st.id)) {
         setBadge("stateSyncBadge", "Editing (unsaved)", "badge-warn");
@@ -2105,101 +2383,7 @@
     $("btnSimPause").classList.add("hidden");
   }
 
-  // ---- GitHub Sync Operations (webgme-git) ----
-
-  async function pullStateFromGitHub(st, opts = {}) {
-    const m = activeMachine();
-    const eff = RustyContract.resolveStateGitLink(m, st);
-    if (!eff.gitOwner || !eff.gitRepo || !eff.gitPath) {
-      if (!opts.silentNotFound) toast("Connect a Git repository on this StateMachine first", "warn");
-      return;
-    }
-    const statusEl = $("gitFetchStatus");
-    if (statusEl) statusEl.textContent = "Fetching from GitHub…";
-    try {
-      const file = await gitClient.fetchFile({
-        owner: eff.gitOwner,
-        repo: eff.gitRepo,
-        path: eff.gitPath,
-        ref: eff.gitBranch || "main",
-        projectId: bridge.projectId,
-      });
-      if (file.type !== "file") {
-        if (statusEl) statusEl.textContent = "";
-        toast(`Path ${eff.gitPath} is a directory, expected file`, "warn");
-        return;
-      }
-
-      const parsed = RustyContract.parseStateModuleRs(file.content);
-      const hooks = RustyContract.resolveStateTransitionHooks(m, st);
-
-      bridge.runTransaction(`Pull ${eff.gitPath} from GitHub`, () => {
-        bridge.client.setAttribute(st.id, "entryCode", parsed.entryCode || "");
-        bridge.client.setAttribute(st.id, "exitCode", parsed.exitCode || "");
-        bridge.client.setAttribute(st.id, "codeCache", file.content);
-        const deps = RustyAnalyzer.extractDependencies(`${parsed.entryCode}\n${parsed.exitCode}`, m);
-        bridge._applyDepsInsideTx(
-          st.id,
-          deps.memberIds,
-          RustyAnalyzer.serializeDepsSnapshot(deps.snapshot),
-        );
-
-        for (const h of hooks) {
-          if (Object.prototype.hasOwnProperty.call(parsed.actionsByFnName, h.fnName)) {
-            const tr = h.transition;
-            const act = parsed.actionsByFnName[h.fnName];
-            bridge.client.setAttribute(tr.id, "action", act);
-            const tDeps = RustyAnalyzer.extractDependencies("", m, {
-              triggerEvent: tr.event,
-              guardText: tr.guard || "",
-              actionText: act,
-            });
-            bridge._applyDepsInsideTx(
-              tr.id,
-              tDeps.memberIds,
-              RustyAnalyzer.serializeDepsSnapshot(tDeps.snapshot),
-            );
-            state.dirtyTransIds.delete(tr.id);
-          }
-        }
-      });
-
-      state.fetchedStateIds.add(st.id);
-      state.dirtyStateIds.delete(st.id);
-
-      const sess = state.codeEditorSession;
-      if (sess && !sess.dirty) {
-        if (sess.mode === "state-hook" && sess.stateId === st.id) {
-          sess.draftEntry = parsed.entryCode || "";
-          sess.draftExit = parsed.exitCode || "";
-          loadCenterEditorFromSession();
-        } else if (sess.mode === "transition-action" && sess.stateId === st.id) {
-          for (const h of hooks) {
-            if (
-              h.transition &&
-              h.transition.id === sess.transitionId &&
-              Object.prototype.hasOwnProperty.call(parsed.actionsByFnName, h.fnName)
-            ) {
-              sess.draftAction = parsed.actionsByFnName[h.fnName];
-              loadCenterEditorFromSession();
-              break;
-            }
-          }
-        }
-      }
-
-      if (statusEl) statusEl.textContent = "Loaded from GitHub";
-      toast(`Fetched ${eff.gitPath} from ${eff.gitOwner}/${eff.gitRepo}`, "ok");
-    } catch (err) {
-      if (err.status === 404 && opts.silentNotFound) {
-        state.fetchedStateIds.add(st.id);
-        if (statusEl) statusEl.textContent = "New file (will be created on push)";
-        return;
-      }
-      if (statusEl) statusEl.textContent = "";
-      toast(`Pull failed: ${err.message}`, "err");
-    }
-  }
+  // ---- Workspace & GitHub Sync Operations (webgme-git) ----
 
   function deleteTransitionWithConfirm(tr) {
     const m = activeMachine();
@@ -2224,15 +2408,21 @@
       const nextSrc = nextM.states.find((s) => s.id === srcId);
       if (nextSrc) {
         const composed = RustyContract.composeStateModuleRs(nextM, nextSrc).code;
-        bridge.updateNodeAttributes(nextSrc.id, { codeCache: composed }, `Recompose ${nextSrc.name} after transition delete`);
+        const relPath = `src/states/${RustyContract.toSnakeCase(nextSrc.name)}.rs`;
+        writeMachineFileToLocalWorkspaceCache(nextM, relPath, composed);
       }
-      syncMachineArtifactsToWorkspace(activeMachine());
+      syncIncrementalWorkspaceOps(activeMachine(), {
+        scope: "transition",
+        stateIds: srcId ? [srcId] : [],
+      });
     }
   }
 
-  function offerGlobalRenameRefactoring(oldSnake, newSnake) {
+  function applyGlobalRenameRefactoring(oldSnake, newSnake) {
     const m = activeMachine();
-    if (!m || !oldSnake || !newSnake || oldSnake === newSnake) return;
+    if (!m || !oldSnake || !newSnake || oldSnake === newSnake) {
+      return { replacements: 0, stateIds: [], includeMachine: false };
+    }
     const stateUpdates = [];
     const transUpdates = [];
     let totalReplacements = 0;
@@ -2247,27 +2437,31 @@
       }
     }
 
+    let guardChanged = false;
     for (const tr of m.transitions || []) {
       const rGuard = RustyAnalyzer.renameGlobalIdentifierInGuard(tr.guard || "", oldSnake, newSnake);
       const rAction = RustyAnalyzer.renameGlobalIdentifierInCode(tr.action || "", oldSnake, newSnake);
       const count = rGuard.replacements + rAction.replacements;
+      if (rGuard.replacements > 0) guardChanged = true;
       if (count > 0) {
         totalReplacements += count;
         transUpdates.push({ tr, guard: rGuard.guard, action: rAction.code });
       }
     }
 
-    if (totalReplacements === 0) return;
-    if (
-      !window.confirm(
-        `Found ${totalReplacements} code/guard reference(s) to "${oldSnake}". Update them to "${newSnake}" automatically?`,
-      )
-    ) {
-      return;
+    if (totalReplacements === 0) {
+      return { replacements: 0, stateIds: [], includeMachine: false };
     }
 
     const updatedTransMap = new Map(transUpdates.map((u) => [u.tr.id, u]));
     const updatedStateMap = new Map(stateUpdates.map((u) => [u.st.id, u]));
+    const affectedStateIds = Array.from(
+      new Set([
+        ...stateUpdates.map((u) => u.st.id),
+        ...transUpdates.map((u) => u.tr.srcId).filter(Boolean),
+      ]),
+    );
+
     const nextModel = {
       ...m,
       states: (m.states || []).map((s) => {
@@ -2280,19 +2474,26 @@
       }),
     };
 
-    bridge.runTransaction(`Refactor globals.${oldSnake} → globals.${newSnake}`, () => {
-      for (const u of stateUpdates) {
-        bridge.client.setAttribute(u.st.id, "entryCode", u.entryCode);
-        bridge.client.setAttribute(u.st.id, "exitCode", u.exitCode);
-        const updatedSt = nextModel.states.find((s) => s.id === u.st.id);
+    for (const sid of affectedStateIds) {
+      const updatedSt = nextModel.states.find((s) => s.id === sid);
+      if (updatedSt) {
         const composed = RustyContract.composeStateModuleRs(nextModel, updatedSt).code;
-        bridge.client.setAttribute(u.st.id, "codeCache", composed);
-        const deps = RustyAnalyzer.extractDependencies(`${u.entryCode}\n${u.exitCode}`, nextModel);
-        bridge._applyDepsInsideTx(u.st.id, deps.memberIds, RustyAnalyzer.serializeDepsSnapshot(deps.snapshot));
+        const relPath = `src/states/${RustyContract.toSnakeCase(updatedSt.name)}.rs`;
+        writeMachineFileToLocalWorkspaceCache(nextModel, relPath, composed);
+      }
+    }
+
+    bridge.runTransaction(`Refactor globals.${oldSnake} → globals.${newSnake}`, () => {
+      for (const sid of affectedStateIds) {
+        const updatedSt = nextModel.states.find((s) => s.id === sid);
+        if (!updatedSt) continue;
+        const deps = RustyAnalyzer.extractDependencies(`${updatedSt.entryCode || ""}\n${updatedSt.exitCode || ""}`, nextModel);
+        bridge._applyDepsInsideTx(updatedSt.id, deps.memberIds, RustyAnalyzer.serializeDepsSnapshot(deps.snapshot));
       }
       for (const u of transUpdates) {
-        bridge.client.setAttribute(u.tr.id, "guard", u.guard);
-        bridge.client.setAttribute(u.tr.id, "action", u.action);
+        if (u.guard !== (u.tr.guard || "")) {
+          bridge.client.setAttribute(u.tr.id, "guard", u.guard);
+        }
         const deps = RustyAnalyzer.extractDependencies("", nextModel, {
           triggerEvent: u.tr.event,
           guardText: u.guard,
@@ -2301,27 +2502,43 @@
         bridge._applyDepsInsideTx(u.tr.id, deps.memberIds, RustyAnalyzer.serializeDepsSnapshot(deps.snapshot));
       }
     });
-    toast(`Updated ${totalReplacements} reference(s) to ${newSnake}`, "ok");
+    toast(`Auto-refactored ${totalReplacements} reference(s) from globals.${oldSnake} → globals.${newSnake}`, "ok");
+    return { replacements: totalReplacements, stateIds: affectedStateIds, includeMachine: guardChanged };
   }
 
-  function offerEventRenameRefactoring(oldPascal, newEventName) {
+  function applyEventRenameRefactoring(oldPascal, newEventName) {
     const m = activeMachine();
-    if (!m || !oldPascal || !newEventName) return;
+    if (!m || !oldPascal || !newEventName) {
+      return { count: 0, stateIds: [] };
+    }
     const matches = (m.transitions || []).filter(
       (t) => RustyContract.toPascalCase(t.event || "") === oldPascal,
     );
-    if (matches.length === 0) return;
-    if (
-      !window.confirm(
-        `Update ${matches.length} transition(s) using event "${oldPascal}" to "${newEventName}"?`,
-      )
-    ) {
-      return;
+    if (matches.length === 0) {
+      return { count: 0, stateIds: [] };
     }
+
+    const matchIds = new Set(matches.map((tr) => tr.id));
+    const affectedStateIds = Array.from(new Set(matches.map((tr) => tr.srcId).filter(Boolean)));
+    const nextModel = {
+      ...m,
+      transitions: (m.transitions || []).map((t) =>
+        matchIds.has(t.id) ? { ...t, event: newEventName } : t,
+      ),
+    };
+    for (const sid of affectedStateIds) {
+      const st = nextModel.states.find((s) => s.id === sid);
+      if (st) {
+        const composed = RustyContract.composeStateModuleRs(nextModel, st).code;
+        const relPath = `src/states/${RustyContract.toSnakeCase(st.name)}.rs`;
+        writeMachineFileToLocalWorkspaceCache(nextModel, relPath, composed);
+      }
+    }
+
     bridge.runTransaction(`Rename transition events ${oldPascal} → ${newEventName}`, () => {
       for (const tr of matches) {
         bridge.client.setAttribute(tr.id, "event", newEventName);
-        const deps = RustyAnalyzer.extractDependencies("", m, {
+        const deps = RustyAnalyzer.extractDependencies("", nextModel, {
           triggerEvent: newEventName,
           guardText: tr.guard || "",
           actionText: tr.action || "",
@@ -2329,7 +2546,8 @@
         bridge._applyDepsInsideTx(tr.id, deps.memberIds, RustyAnalyzer.serializeDepsSnapshot(deps.snapshot));
       }
     });
-    toast(`Updated ${matches.length} transition event(s) to ${newEventName}`, "ok");
+    toast(`Auto-refactored ${matches.length} transition event(s) to ${newEventName}`, "ok");
+    return { count: matches.length, stateIds: affectedStateIds };
   }
 
   async function openCommitModal() {
@@ -2671,12 +2889,6 @@
     $("btnCancelCodeEditor").addEventListener("click", () => {
       if (confirmDiscardCodeEditorIfDirty()) cancelCodeEditorSession();
     });
-    $("btnPullCodeEditor").addEventListener("click", () => {
-      const m = activeMachine();
-      const sess = state.codeEditorSession;
-      const st = m && sess && m.states.find((s) => s.id === sess.stateId);
-      if (st) pullStateFromGitHub(st);
-    });
     $("btnToggleMinimap").addEventListener("click", () => {
       state.minimapCollapsed = !state.minimapCollapsed;
       renderCenterMode();
@@ -2792,7 +3004,7 @@
           });
           selectStateForEditing(id);
           const nextM = activeMachine();
-          if (nextM) syncMachineArtifactsToWorkspace(nextM);
+          if (nextM) syncIncrementalWorkspaceOps(nextM, { scope: "state-add", stateIds: [id] });
         },
       });
     });
@@ -2856,7 +3068,7 @@
             maxValue: (vals.maxValue || "").trim(),
           });
           const nextM = activeMachine();
-          if (nextM) syncMachineArtifactsToWorkspace(nextM);
+          if (nextM) syncIncrementalWorkspaceOps(nextM, { scope: "global", stateIds: [] });
         },
       });
     });
@@ -2885,7 +3097,7 @@
             payloadType: vals.payloadType || "",
           });
           const nextM = activeMachine();
-          if (nextM) syncMachineArtifactsToWorkspace(nextM);
+          if (nextM) syncIncrementalWorkspaceOps(nextM, { scope: "event", stateIds: [] });
         },
       });
     });
@@ -2925,13 +3137,21 @@
       const nextSt = nextM && nextM.states.find((s) => s.id === st.id);
       if (nextM && nextSt) {
         const newPath = RustyContract.resolveStateGitLink(nextM, nextSt).gitPath;
-        const extraOps = [];
+        const recomposed = RustyContract.composeStateModuleRs(nextM, nextSt).code;
+        const oldRel = `src/states/${RustyContract.toSnakeCase(st.name)}.rs`;
+        const newRel = `src/states/${RustyContract.toSnakeCase(nextSt.name)}.rs`;
         if (oldPath && newPath && oldPath !== newPath) {
-          const recomposed = RustyContract.composeStateModuleRs(nextM, nextSt).code;
-          bridge.updateNodeAttributes(nextSt.id, { codeCache: recomposed }, `Recompose renamed state ${nextName}`);
-          extraOps.push({ op: "rename", from: oldPath, to: newPath, content: recomposed, mode: "100644" });
+          removeMachineFileFromLocalWorkspaceCache(nextM, oldRel);
+          writeMachineFileToLocalWorkspaceCache(nextM, newRel, recomposed);
+          syncIncrementalWorkspaceOps(activeMachine(), {
+            scope: "state-meta",
+            stateIds: [],
+            extraOps: [{ op: "rename", from: oldPath, to: newPath, content: recomposed, mode: "100644" }],
+          });
+        } else {
+          writeMachineFileToLocalWorkspaceCache(nextM, newRel, recomposed);
+          syncIncrementalWorkspaceOps(activeMachine(), { scope: "state-meta", stateIds: [nextSt.id] });
         }
-        syncMachineArtifactsToWorkspace(activeMachine(), extraOps);
       }
       toast(`Saved ${nextName} design attributes to workspace`, "ok");
     });
@@ -2950,6 +3170,7 @@
         closeCodeEditorSession(false);
       }
       const deletedPath = RustyContract.resolveStateGitLink(m, st).gitPath;
+      const deletedRel = `src/states/${RustyContract.toSnakeCase(st.name)}.rs`;
       const incomingSrcIds = Array.from(
         new Set(connected.filter((t) => t.dstId === st.id && t.srcId !== st.id).map((t) => t.srcId)),
       );
@@ -2958,23 +3179,24 @@
       state.selectedId = null;
       const nextM = activeMachine();
       if (nextM) {
+        removeMachineFileFromLocalWorkspaceCache(nextM, deletedRel);
         for (const sid of incomingSrcIds) {
           const srcSt = nextM.states.find((s) => s.id === sid);
           if (srcSt) {
             const composed = RustyContract.composeStateModuleRs(nextM, srcSt).code;
-            bridge.updateNodeAttributes(srcSt.id, { codeCache: composed }, `Recompose ${srcSt.name} after state delete`);
+            const relPath = `src/states/${RustyContract.toSnakeCase(srcSt.name)}.rs`;
+            writeMachineFileToLocalWorkspaceCache(nextM, relPath, composed);
           }
         }
-        syncMachineArtifactsToWorkspace(activeMachine(), deletedPath ? [{ op: "delete", path: deletedPath }] : []);
+        syncIncrementalWorkspaceOps(activeMachine(), {
+          scope: "state-delete",
+          stateIds: incomingSrcIds,
+          extraOps: deletedPath ? [{ op: "delete", path: deletedPath }] : [],
+        });
         if (nextM.states.length > 0 && !nextM.states.some((s) => s.isInitial)) {
           toast("Initial state deleted — mark another state as Initial before verifying/simulating", "warn");
         }
       }
-    });
-
-    $("btnPullState").addEventListener("click", () => {
-      const st = selectedStateObj();
-      if (st) pullStateFromGitHub(st);
     });
 
     // Transition Inspector actions (live guard validation + exclusivity check + dependsOn sync)
@@ -3003,6 +3225,10 @@
         action: currentAction,
       });
       const recomposedSrc = srcSt ? RustyContract.composeStateModuleRs(tempMachine, srcSt).code : "";
+      if (srcSt) {
+        const relPath = `src/states/${RustyContract.toSnakeCase(srcSt.name)}.rs`;
+        writeMachineFileToLocalWorkspaceCache(tempMachine, relPath, recomposedSrc);
+      }
       const deps = RustyAnalyzer.extractDependencies("", m, {
         triggerEvent: event,
         guardText: guard,
@@ -3014,10 +3240,14 @@
         deps.memberIds,
         RustyAnalyzer.serializeDepsSnapshot(deps.snapshot),
         `Update Transition ${name} & dependsOn`,
-        srcSt ? { stateId: srcSt.id, codeCache: recomposedSrc } : null,
       );
       const nextM = activeMachine();
-      if (nextM) syncMachineArtifactsToWorkspace(nextM);
+      if (nextM) {
+        syncIncrementalWorkspaceOps(nextM, {
+          scope: "transition",
+          stateIds: srcSt ? [srcSt.id] : [],
+        });
+      }
       toast("Saved transition guard & metadata to workspace", "ok");
     });
 
@@ -3039,18 +3269,6 @@
       else toast("Hybrid Local Workspace automatically stores your crate in webgme-git. Connect a GitHub repo or click ↓ Download .zip.", "ok");
     });
 
-    $("btnPullAll").addEventListener("click", async () => {
-      const m = activeMachine();
-      if (!m) return;
-      for (const st of m.states) {
-        const eff = RustyContract.resolveStateGitLink(m, st);
-        if (eff.gitOwner && eff.gitRepo && eff.gitPath) {
-          await pullStateFromGitHub(st);
-        }
-      }
-      const nextM = activeMachine();
-      if (nextM) refreshWorkspaceStatus(nextM, true);
-    });
     $("btnPushCrate").addEventListener("click", openCommitModal);
     $("btnConfirmCommitWorkspace").addEventListener("click", () => submitWorkspaceCommit(false));
     $("btnForceCommitWorkspace").addEventListener("click", () => submitWorkspaceCommit(true));
@@ -3059,9 +3277,16 @@
       if (!m) return;
       if (!window.confirm(`Discard all uncommitted Git workspace deltas for ${m.name}?`)) return;
       try {
-        await gitClient.discardWorkspace(workspaceParamsForMachine(m));
+        const params = workspaceParamsForMachine(m);
+        const keyTag = workspaceKeyTag(params);
+        await gitClient.discardWorkspace(params);
+        if (keyTag) {
+          state.workspaceFilesByKey.delete(keyTag);
+          state.syncedMachineKeys.delete(keyTag);
+        }
         $("commitModal").classList.add("hidden");
-        await refreshWorkspaceStatus(m, true);
+        const rawM = rawActiveMachine();
+        if (rawM) await ensureMachineWorkspaceReady(rawM);
         toast("Discarded uncommitted workspace changes", "ok");
       } catch (err) {
         toast(`Discard failed: ${err.message}`, "err");
@@ -3330,9 +3555,23 @@
         stateIds: m.states.map((s) => s.id),
       });
       $("repoModal").classList.add("hidden");
-      const nextM = activeMachine();
-      if (nextM) {
-        await syncMachineArtifactsToWorkspace(nextM);
+      const rawNext = rawActiveMachine();
+      if (rawNext) {
+        const prevStateHooks = new Map((m.states || []).map((s) => [s.id, s]));
+        const prevTrHooks = new Map((m.transitions || []).map((t) => [t.id, t]));
+        const hydratedToStage = {
+          ...rawNext,
+          states: (rawNext.states || []).map((s) => {
+            const prev = prevStateHooks.get(s.id);
+            return prev ? { ...s, entryCode: prev.entryCode || "", exitCode: prev.exitCode || "" } : s;
+          }),
+          transitions: (rawNext.transitions || []).map((t) => {
+            const prev = prevTrHooks.get(t.id);
+            return prev ? { ...t, action: prev.action || "" } : t;
+          }),
+        };
+        await syncIncrementalWorkspaceOps(hydratedToStage, { scope: "full" });
+        renderAll();
       }
       toast(
         `Connected ${gitOwner}/${gitRepo}${baseCommitSha ? `@${baseCommitSha.slice(0, 7)}` : ""} (${gitPath})`,
@@ -3368,13 +3607,29 @@
       state.selectedId = null;
       state.dirtyStateIds.clear();
       state.dirtyTransIds.clear();
-      state.fetchedStateIds.clear();
       state.codeEditorSession = null;
       state.connectMode = false;
       state.connectSourceId = null;
+
+      const prefix = gitPath.replace(/^\/+|\/+$/g, "");
+      const relFiles = {};
+      for (const [fullPath, content] of Object.entries(filesMap || {})) {
+        const clean = String(fullPath || "").replace(/^\/+/, "");
+        const rel = prefix && clean.startsWith(`${prefix}/`) ? clean.slice(prefix.length + 1) : clean;
+        if (rel) relFiles[rel] = content;
+      }
+
       $("repoModal").classList.add("hidden");
-      const nextM = activeMachine();
-      if (nextM) await refreshWorkspaceStatus(nextM, true);
+      const rawNext = rawActiveMachine();
+      if (rawNext) {
+        const nextKeyTag = workspaceKeyTag(workspaceParamsForMachine(rawNext));
+        if (nextKeyTag) {
+          state.workspaceFilesByKey.set(nextKeyTag, { files: relFiles, loaded: true });
+          state.syncedMachineKeys.add(nextKeyTag);
+        }
+        rebuildSimulation(false);
+        await refreshWorkspaceStatus(rawNext, true);
+      }
       toast(
         `Connected & imported ${model.name}${baseCommitSha ? ` @ ${baseCommitSha.slice(0, 7)}` : ""} (${summary.states} states, ${summary.transitions} transitions)`,
         "ok",

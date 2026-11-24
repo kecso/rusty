@@ -81,6 +81,74 @@ function sanitizeEventArg(ev) {
     .replace(/[^a-zA-Z0-9_.:-]/g, "");
 }
 
+async function checkCrateFiles(files) {
+  let tmpDir = null;
+  try {
+    tmpDir = writeCrateToTempDir(files);
+    const result = await runExecFile("cargo", ["check", "--offline", "--message-format=json"], {
+      cwd: tmpDir,
+    });
+    const diagnostics = parseCargoJsonDiagnostics(result.stdout);
+    return {
+      ok: result.ok,
+      durationMs: result.durationMs,
+      diagnostics,
+      rawStderr: result.stderr,
+      fileCount: Object.keys(files).length,
+    };
+  } finally {
+    if (tmpDir) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }
+}
+
+const VALIDATOR_NAME = "rusty-cargo-check";
+
+function getWorkspaceManagerSafe() {
+  try {
+    const { GitRouter } = require("webgme-git");
+    if (GitRouter && typeof GitRouter.getWorkspaceManager === "function") {
+      return GitRouter.getWorkspaceManager();
+    }
+  } catch (_err) {
+    // webgme-git not loaded or not initialized yet
+  }
+  return null;
+}
+
+function registerCargoWorkspaceValidator() {
+  const manager = getWorkspaceManagerSafe();
+  if (!manager || typeof manager.registerValidator !== "function") {
+    return false;
+  }
+  manager.registerValidator(VALIDATOR_NAME, async ({ virtualFiles }) => {
+    if (!virtualFiles || !virtualFiles["Cargo.toml"]) {
+      return [];
+    }
+    const check = await checkCrateFiles(virtualFiles);
+    if (check.ok) {
+      return [];
+    }
+    const errMsgs = (check.diagnostics || [])
+      .filter((d) => d.level === "error")
+      .slice(0, 6)
+      .map((d) => d.message || d.rendered);
+    if (errMsgs.length > 0) {
+      return errMsgs;
+    }
+    return [check.rawStderr || "cargo check failed"];
+  });
+  return true;
+}
+
+function unregisterCargoWorkspaceValidator() {
+  const manager = getWorkspaceManagerSafe();
+  if (manager && typeof manager.unregisterValidator === "function") {
+    manager.unregisterValidator(VALIDATOR_NAME);
+  }
+}
+
 function initialize(middlewareOpts) {
   if (initialized) return;
   initialized = true;
@@ -137,27 +205,12 @@ function initialize(middlewareOpts) {
       return;
     }
 
-    let tmpDir = null;
     try {
       const files = hasFiles ? rawFiles : generateCrateFiles(model);
-      tmpDir = writeCrateToTempDir(files);
-      const result = await runExecFile("cargo", ["check", "--offline", "--message-format=json"], {
-        cwd: tmpDir,
-      });
-      const diagnostics = parseCargoJsonDiagnostics(result.stdout);
-      res.json({
-        ok: result.ok,
-        durationMs: result.durationMs,
-        diagnostics,
-        rawStderr: result.stderr,
-        fileCount: Object.keys(files).length,
-      });
+      const result = await checkCrateFiles(files);
+      res.json(result);
     } catch (err) {
       res.status(500).json({ ok: false, error: err.message });
-    } finally {
-      if (tmpDir) {
-        fs.rmSync(tmpDir, { recursive: true, force: true });
-      }
     }
   });
 
@@ -208,13 +261,18 @@ function initialize(middlewareOpts) {
       }
     }
   });
+  registerCargoWorkspaceValidator();
 }
 
 function start(callback) {
+  registerCargoWorkspaceValidator();
   if (typeof callback === "function") callback(null);
 }
 
 function stop(callback) {
+  unregisterCargoWorkspaceValidator();
+  initialized = false;
+  router.stack.length = 0;
   if (typeof callback === "function") callback(null);
 }
 

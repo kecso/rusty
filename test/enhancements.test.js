@@ -299,7 +299,7 @@ describe("Rusty Studio V3 Enhancements (Codec, Impact, Determinism, Layout, Impo
     assert.equal(sim.getSnapshot().currentState, "Heating");
   });
 
-  it("stores V3 entryCode/exitCode/reenter/minValue/maxValue and dependsOn Sets in seed/RustySeed.webgmex", () => {
+  it("stores V3 design attributes and dependsOn Sets without inline code artifacts in seed/RustySeed.webgmex", () => {
     const raw = execFileSync("unzip", ["-p", path.join(REPO_ROOT, "seed/RustySeed.webgmex"), "project.json"], {
       encoding: "utf8",
     });
@@ -311,8 +311,18 @@ describe("Rusty Studio V3 Enhancements (Codec, Impact, Determinism, Layout, Impo
     assert.equal(withSig.length, withDependsOn.length);
 
     const heatingNode = objs.find((o) => o.atr && o.atr.name === "Heating");
-    assert.ok(heatingNode && heatingNode.atr.entryCode.includes("cycle_ticks = 0"));
+    assert.ok(heatingNode, "Expected Heating state node in RustySeed.webgmex");
+    assert.equal(heatingNode.atr.entryCode, undefined);
+    assert.equal(heatingNode.atr.exitCode, undefined);
+    assert.equal(heatingNode.atr.codeCache, undefined);
     assert.equal(heatingNode.atr.priority, undefined);
+    assert.ok(heatingNode.atr.depsSignature);
+
+    const heatStepTr = objs.find((o) => o.atr && o.atr.event === "Tick" && o.atr.name === "heat_step");
+    assert.ok(heatStepTr, "Expected heat_step transition node in RustySeed.webgmex");
+    assert.equal(heatStepTr.atr.action, undefined);
+    assert.ok(heatStepTr.atr.guard.includes("current_temp_c"));
+    assert.ok(heatStepTr.atr.depsSignature);
 
     // Verify `webgme-git` `git-seed` is imported as a genuine WebGME library and mixed into StateMachine & State
     const rootObj = objs.find((o) => o._id === project.rootHash);
@@ -342,7 +352,9 @@ describe("Rusty Studio V3 Enhancements (Codec, Impact, Determinism, Layout, Impo
     const libGitLinkPath = `/${libRelid}/${libGitLinkRel}`;
 
     const smMetaNode = objs.find((o) => o.atr && o.atr.name === "StateMachine" && o.atr.crateName);
-    const stateMetaNode = objs.find((o) => o.atr && o.atr.name === "State" && typeof o.atr.entryCode === "string");
+    const stateMetaNode = objs.find(
+      (o) => o.atr && o.atr.name === "State" && topChildIds.has(o._id),
+    );
     const smPath = `/${Object.keys(rootObj).find((k) => rootObj[k] === smMetaNode._id)}`;
     const statePath = `/${Object.keys(rootObj).find((k) => rootObj[k] === stateMetaNode._id)}`;
     const hasMixinEntry = (nodePath) =>

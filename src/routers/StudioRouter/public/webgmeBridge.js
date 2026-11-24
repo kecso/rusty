@@ -199,14 +199,6 @@
           const name = child.getAttribute("name") || "State";
           const pos = child.getRegistry("position") || { x: 160, y: 160 };
           stateNameById.set(cid, name);
-          const rawCode = child.getAttribute("codeCache") || "";
-          const rawEntry = child.getAttribute("entryCode");
-          const rawExit = child.getAttribute("exitCode");
-          const resolvedHooks = global.RustyContract.getStateHookBodies({
-            entryCode: rawEntry,
-            exitCode: rawExit,
-            code: rawCode,
-          });
           states.push({
             id: cid,
             name,
@@ -214,9 +206,9 @@
             isInitial: Boolean(child.getAttribute("isInitial")),
             isFinal: Boolean(child.getAttribute("isFinal")),
             color: child.getAttribute("color") || "#38bdf8",
-            entryCode: resolvedHooks.entryCode,
-            exitCode: resolvedHooks.exitCode,
-            code: rawCode,
+            entryCode: "",
+            exitCode: "",
+            code: "",
             gitOwner: child.getAttribute("gitOwner") || "",
             gitRepo: child.getAttribute("gitRepo") || "",
             gitBranch: child.getAttribute("gitBranch") || "",
@@ -261,7 +253,7 @@
           dstName: stateNameById.get(dstId) || "",
           event: tNode.getAttribute("event") || "Tick",
           guard: tNode.getAttribute("guard") || "",
-          action: tNode.getAttribute("action") || "",
+          action: "",
           reenter: Boolean(tNode.getAttribute("reenter")),
           dependsOn: tNode.getMemberIds("dependsOn") || [],
           depsSignature: tNode.getAttribute("depsSignature") || "",
@@ -317,14 +309,6 @@
     createState(machineId, opts) {
       const baseId = this.getMetaId("State");
       if (!baseId) throw new Error("State meta node not found");
-      const entryCode = opts.entryCode || "";
-      const exitCode = opts.exitCode || "";
-      const composed =
-        opts.code ||
-        global.RustyContract.composeStateModuleRs(
-          { name: "StateMachine", events: [], transitions: [] },
-          { name: opts.name, entryCode, exitCode },
-        ).code;
       return this.runTransaction(`Add State ${opts.name}`, () => {
         const id = this.client.createNode({ parentId: machineId, baseId });
         this.client.setAttribute(id, "name", opts.name);
@@ -332,9 +316,6 @@
         this.client.setAttribute(id, "isInitial", Boolean(opts.isInitial));
         this.client.setAttribute(id, "isFinal", Boolean(opts.isFinal));
         this.client.setAttribute(id, "color", opts.color || "#38bdf8");
-        this.client.setAttribute(id, "entryCode", entryCode);
-        this.client.setAttribute(id, "exitCode", exitCode);
-        this.client.setAttribute(id, "codeCache", composed);
         this.client.setAttribute(id, "gitOwner", opts.gitOwner || "");
         this.client.setAttribute(id, "gitRepo", opts.gitRepo || "");
         this.client.setAttribute(id, "gitBranch", opts.gitBranch || "");
@@ -371,34 +352,16 @@
       });
     }
 
-    updateStateHookAndCode(stateId, { entryCode, exitCode, codeCache }, nextMemberIds, depsSignature, msg) {
-      this.runTransaction(msg || `Update Rust hooks for ${stateId}`, () => {
-        if (entryCode !== undefined) this.client.setAttribute(stateId, "entryCode", entryCode);
-        if (exitCode !== undefined) this.client.setAttribute(stateId, "exitCode", exitCode);
-        if (codeCache !== undefined) this.client.setAttribute(stateId, "codeCache", codeCache);
-        this._applyDepsInsideTx(stateId, nextMemberIds, depsSignature);
-      });
-    }
-
-    updateStateCodeAndDeps(nodeId, code, nextMemberIds, depsSignature, msg) {
-      const parsed = global.RustyContract.parseStateModuleRs(code || "");
-      this.runTransaction(msg || `Update Rust code for ${nodeId}`, () => {
-        this.client.setAttribute(nodeId, "entryCode", parsed.entryCode || "");
-        this.client.setAttribute(nodeId, "exitCode", parsed.exitCode || "");
-        this.client.setAttribute(nodeId, "codeCache", code);
-        this._applyDepsInsideTx(nodeId, nextMemberIds, depsSignature);
-      });
-    }
-
-    updateTransitionAndDeps(nodeId, attrs, nextMemberIds, depsSignature, msg, srcStateCodeUpdate) {
+    updateTransitionAndDeps(nodeId, attrs, nextMemberIds, depsSignature, msg) {
+      const allowedAttrs = {};
+      for (const key of ["name", "event", "guard", "reenter"]) {
+        if (attrs && attrs[key] !== undefined) allowedAttrs[key] = attrs[key];
+      }
       this.runTransaction(msg || `Update Transition ${nodeId}`, () => {
-        for (const [k, v] of Object.entries(attrs)) {
+        for (const [k, v] of Object.entries(allowedAttrs)) {
           this.client.setAttribute(nodeId, k, v);
         }
         this._applyDepsInsideTx(nodeId, nextMemberIds, depsSignature);
-        if (srcStateCodeUpdate && srcStateCodeUpdate.stateId && srcStateCodeUpdate.codeCache !== undefined) {
-          this.client.setAttribute(srcStateCodeUpdate.stateId, "codeCache", srcStateCodeUpdate.codeCache);
-        }
       });
     }
 
@@ -474,9 +437,6 @@
         this.client.setAttribute(sid, "isInitial", Boolean(st.isInitial));
         this.client.setAttribute(sid, "isFinal", Boolean(st.isFinal));
         this.client.setAttribute(sid, "color", st.color || "#38bdf8");
-        this.client.setAttribute(sid, "entryCode", hooks.entryCode || "");
-        this.client.setAttribute(sid, "exitCode", hooks.exitCode || "");
-        this.client.setAttribute(sid, "codeCache", st.code || "");
         this.client.setAttribute(sid, "gitOwner", "");
         this.client.setAttribute(sid, "gitRepo", "");
         this.client.setAttribute(sid, "gitBranch", "");
@@ -491,12 +451,7 @@
       const modelWithIds = { ...model, globals: globalsWithIds, events: eventsWithIds, states: statesWithIds };
 
       for (const st of statesWithIds) {
-        const composed = global.RustyContract.composeStateModuleRs(modelWithIds, st).code;
-        this.client.setAttribute(st.id, "codeCache", composed);
-        const deps = global.RustyAnalyzer.extractDependencies(
-          `${st.entryCode || ""}\n${st.exitCode || ""}`,
-          modelWithIds,
-        );
+        const deps = global.RustyAnalyzer.extractDependencies(`${st.entryCode || ""}\n${st.exitCode || ""}`, modelWithIds);
         const sig = global.RustyAnalyzer.serializeDepsSnapshot(deps.snapshot);
         this.client.setAttribute(st.id, "depsSignature", sig);
         for (const mid of deps.memberIds) {
@@ -516,7 +471,6 @@
         );
         this.client.setAttribute(tid, "event", tr.event || "Tick");
         this.client.setAttribute(tid, "guard", tr.guard || "");
-        this.client.setAttribute(tid, "action", tr.action || "");
         this.client.setAttribute(tid, "reenter", Boolean(tr.reenter));
         this.client.setPointer(tid, "src", srcId);
         this.client.setPointer(tid, "dst", dstId);
@@ -650,7 +604,6 @@
         );
         this.client.setAttribute(id, "event", event || "Tick");
         this.client.setAttribute(id, "guard", guard || "");
-        this.client.setAttribute(id, "action", action || "");
         this.client.setAttribute(id, "reenter", Boolean(reenter));
         this.client.setPointer(id, "src", srcId);
         this.client.setPointer(id, "dst", dstId);

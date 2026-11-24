@@ -29,6 +29,7 @@ describe("Rusty WebGME Routers", () => {
     StudioRouter.initialize(mockOpts);
     RustSimRouter.initialize(mockOpts);
     GitRouter.initialize(mockOpts);
+    await RustSimRouter.start();
 
     app.use("/routers/studio", StudioRouter.router);
     app.use("/routers/rustsim", RustSimRouter.router);
@@ -41,6 +42,7 @@ describe("Rusty WebGME Routers", () => {
   });
 
   after(async () => {
+    await RustSimRouter.stop();
     await GitRouter.stop();
     if (server) {
       await new Promise((resolve) => server.close(resolve));
@@ -102,6 +104,7 @@ describe("Rusty WebGME Routers", () => {
     assert.match(html, /data-trans-tab="guard"/);
     assert.match(html, /data-trans-tab="action"/);
     assert.doesNotMatch(html, /id="inpTransPriority"/);
+    assert.doesNotMatch(html, /id="btnPull(All|State|CodeEditor)"/);
 
     const guardRes = await fetch(`${baseUrl}/routers/studio/common/rustGuardLang.js`);
     assert.equal(guardRes.status, 200);
@@ -128,7 +131,8 @@ describe("Rusty WebGME Routers", () => {
     const appJs = await appJsRes.text();
     assert.match(appJs, /btnPickTransitionOnDiagram/);
     assert.match(appJs, /URLSearchParams/);
-    assert.match(appJs, /syncMachineArtifactsToWorkspace/);
+    assert.match(appJs, /syncIncrementalWorkspaceOps/);
+    assert.equal(GitRouter.getWorkspaceManager().validators.has("rusty-cargo-check"), true);
   });
 
   it("serves native webgme-git GitRouter /status and local hybrid workspace + ZIP export", async () => {

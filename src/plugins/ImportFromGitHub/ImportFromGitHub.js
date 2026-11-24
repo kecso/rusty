@@ -166,9 +166,6 @@ define([
         core.setAttribute(sNode, "isInitial", Boolean(st.isInitial));
         core.setAttribute(sNode, "isFinal", Boolean(st.isFinal));
         core.setAttribute(sNode, "color", st.color || "#38bdf8");
-        core.setAttribute(sNode, "entryCode", st.entryCode || "");
-        core.setAttribute(sNode, "exitCode", st.exitCode || "");
-        core.setAttribute(sNode, "codeCache", st.code || "");
         core.setAttribute(sNode, "gitOwner", "");
         core.setAttribute(sNode, "gitRepo", "");
         core.setAttribute(sNode, "gitBranch", "");
@@ -201,7 +198,6 @@ define([
         core.setAttribute(tNode, "name", tr.name);
         core.setAttribute(tNode, "event", tr.event);
         core.setAttribute(tNode, "guard", tr.guard || "");
-        core.setAttribute(tNode, "action", tr.action || "");
         core.setAttribute(tNode, "reenter", Boolean(tr.reenter));
         core.setPointer(tNode, "src", srcNode);
         core.setPointer(tNode, "dst", dstNode);

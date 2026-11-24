@@ -75,9 +75,9 @@ define([
               description: core.getAttribute(child, "description") || "",
               isInitial: Boolean(core.getAttribute(child, "isInitial")),
               isFinal: Boolean(core.getAttribute(child, "isFinal")),
-              entryCode: core.getAttribute(child, "entryCode") || "",
-              exitCode: core.getAttribute(child, "exitCode") || "",
-              code: core.getAttribute(child, "codeCache") || "",
+              entryCode: "",
+              exitCode: "",
+              code: "",
               gitOwner: core.getAttribute(child, "gitOwner") || "",
               gitRepo: core.getAttribute(child, "gitRepo") || "",
               gitBranch: core.getAttribute(child, "gitBranch") || "",
@@ -122,9 +122,70 @@ define([
             dstName: stateNameByPath.get(dstPath) || "",
             event: core.getAttribute(tNode, "event") || "Tick",
             guard: core.getAttribute(tNode, "guard") || "",
-            action: core.getAttribute(tNode, "action") || "",
+            action: "",
             reenter: Boolean(core.getAttribute(tNode, "reenter")),
           });
+        }
+
+        // Hydrate state hooks & transition actions from webgme-git workspace overlay when available
+        let wsFiles = null;
+        try {
+          const { GitRouter } = require("webgme-git");
+          const manager = GitRouter && GitRouter.getWorkspaceManager && GitRouter.getWorkspaceManager();
+          if (manager && self.project && self.project.projectId) {
+            const isGithub = Boolean(model.gitOwner && model.gitRepo);
+            const wsParams = isGithub
+              ? {
+                  mode: "github",
+                  projectId: self.project.projectId,
+                  webgmeBranch: self.branchName || "master",
+                  owner: model.gitOwner,
+                  repo: model.gitRepo,
+                  rootPath: contract.resolveMachineCrateRoot(model),
+                  baseCommitSha: core.getAttribute(activeNode, "gitBaseCommitSha") || "",
+                  targetBranch: model.gitBranch || "main",
+                }
+              : {
+                  mode: "local",
+                  projectId: self.project.projectId,
+                  webgmeBranch: self.branchName || "master",
+                  owner: "local",
+                  repo: contract.toCrateName(model.crateName || model.name),
+                  rootPath: "",
+                };
+            const existingWs = await manager.store.get(manager.resolveWorkspaceParams(wsParams).workspaceKey);
+            if (existingWs) {
+              wsFiles = {};
+              const prefix = wsParams.rootPath ? `${wsParams.rootPath.replace(/\/+$/, "")}/` : "";
+              for (const st of model.states) {
+                const rel = `src/states/${contract.toSnakeCase(st.name)}.rs`;
+                const full = prefix ? `${prefix}${rel}` : rel;
+                const op = existingWs.ops && existingWs.ops[full];
+                if (op && op.op === "write") {
+                  wsFiles[rel] = op.content;
+                }
+              }
+            }
+          }
+        } catch (_err) {
+          // fallback to empty hooks when webgme-git workspace manager is not mounted
+        }
+
+        if (wsFiles) {
+          for (const st of model.states) {
+            const rel = `src/states/${contract.toSnakeCase(st.name)}.rs`;
+            if (!wsFiles[rel]) continue;
+            const parsed = contract.parseStateModuleRs(wsFiles[rel]);
+            st.entryCode = parsed.entryCode || "";
+            st.exitCode = parsed.exitCode || "";
+            st.code = wsFiles[rel];
+            const hooks = contract.resolveStateTransitionHooks(model, st);
+            for (const h of hooks) {
+              if (Object.hasOwn(parsed.actionsByFnName || {}, h.fnName)) {
+                h.transition.action = parsed.actionsByFnName[h.fnName] || "";
+              }
+            }
+          }
         }
 
         const files = codegen.generateCrateFiles(model);

@@ -42,9 +42,6 @@
         "isInitial": false,
         "isFinal": false,
         "color": "#38bdf8",
-        "entryCode": "",
-        "exitCode": "",
-        "codeCache": "",
         "depsSignature": ""
       },
       "attribute_meta": {
@@ -53,9 +50,6 @@
         "isInitial": { "type": "boolean" },
         "isFinal": { "type": "boolean" },
         "color": { "type": "string" },
-        "entryCode": { "type": "string" },
-        "exitCode": { "type": "string" },
-        "codeCache": { "type": "string" },
         "depsSignature": { "type": "string" }
       },
       "pointers": {
@@ -73,7 +67,6 @@
         "name": "Transition",
         "event": "Tick",
         "guard": "",
-        "action": "",
         "reenter": false,
         "depsSignature": ""
       },
@@ -81,7 +74,6 @@
         "name": { "type": "string" },
         "event": { "type": "string" },
         "guard": { "type": "string" },
-        "action": { "type": "string" },
         "reenter": { "type": "boolean" },
         "depsSignature": { "type": "string" }
       },

@@ -12,19 +12,21 @@ Rusty avoids storing canonical source code in opaque binary database blobs. Inst
 |  (Collapsible)   |  (ELK/Dag Fixed Layout) |  State Entry/Exit     |
 |  - States        |  - Compact Badges A..Z  |  Transition Guard &   |
 |  - Globals (Min/ |  - Edge Tooltips        |  Exclusivity + Action |
-|    Max bounds)   |  - Impact Banner        |  Live Simulator       |
+|    Max bounds)   |  - Auto-Refactor + Imp. |  Live Simulator       |
 +--------+--------------------+-------------------------+-----------+
-         | WebGME Client API  | Octokit (GitHub App)    | HTTP POST
+         | WebGME Client API  | webgme-git Workspace    | HTTP POST
          v                    v                         v
 +-----------------+  +--------------------+   +---------------------+
 | WebGME Server   |  | webgme-git         |   | RustSimRouter       |
 | Core + MongoDB  |  | gitrouter          |   | /routers/rustsim    |
-| (Nodes, Sets,   |  | Auto-fetch, commit |   | Temp Crate Sandbox  |
-|  Guards, Deps)  |  | Auto-rebase / 409  |   | cargo check / test  |
+| (Design, Sets,  |  | In-Mem/JSON Overlay|   | Cargo Validator +   |
+|  Guards, Deps)  |  | Patch / Commit/ZIP |   | Temp Crate Sandbox  |
 +-----------------+  +--------------------+   +---------------------+
-                              |
+                              |                       ^
+                              |  pre-push cargo check |
+                              +-----------------------+
                               v
-                  GitHub Repository (`dev` branch)
+                  GitHub Repository (commit-pinned base SHA)
                   examples/<machine>/src/states/<state>.rs
 ```
 
@@ -34,7 +36,7 @@ Rusty avoids storing canonical source code in opaque binary database blobs. Inst
 | --- | --- | --- |
 | **StateMachine, States, Transitions, Guards, Globals (with Min/Max bounds), Events, `dependsOn` Sets** | WebGME MongoDB Model | [`metamodel/Language.json`](https://github.com/kecso/rusty/blob/main/metamodel/Language.json) |
 | **Pure Guard AST & Mutual-Exclusivity Prover (DNF + Rational FME + Integer B&B)** | Shared Common Module | [`src/common/rustGuardLang.js`](https://github.com/kecso/rusty/blob/main/src/common/rustGuardLang.js) |
-| **Pure State Hook Modules (`on_enter`, `on_exit`, squashed `tr_<slug>`)** | GitHub Repo + `codeCache` mirror | `examples/<machine>/src/states/<state>.rs` |
+| **Pure State Hook Modules (`on_enter`, `on_exit`, squashed `tr_<slug>`) & Generated Crate** | `webgme-git` Workspace Store + GitHub Repo | `examples/<machine>/src/states/<state>.rs` |
 | **Design-Impact + Hook Analyzer** | Browser Edit-Time Checker | [`src/common/rustAnalyzer.js`](https://github.com/kecso/rusty/blob/main/src/common/rustAnalyzer.js) |
 | **Standalone Cargo Crate Codegen (`TransitionId`, `select_transition`, `execute_transition`)** | Shared + WebGME Plugin | [`src/common/rustCodegen.js`](https://github.com/kecso/rusty/blob/main/src/common/rustCodegen.js) |
 | **GitHub Directory Importer** | Shared + WebGME Plugin | [`src/common/rustImporter.js`](https://github.com/kecso/rusty/blob/main/src/common/rustImporter.js) |
@@ -45,5 +47,5 @@ Rusty avoids storing canonical source code in opaque binary database blobs. Inst
 | Layer | Where | Latency | What It Catches |
 | --- | --- | --- | --- |
 | **1. Guard & Exclusivity Prover** | `RustyGuardLang` (browser) | `< 1 ms` | Pure guard syntax/types + formal overlap proofs across sibling transitions on `(State, Event)` with concrete counterexamples |
-| **2. Edit-Time & Impact Checks** | `RustyAnalyzer` (browser) | `< 1 ms` | Red/yellow Monaco squiggles on `globals.*`, `payload`, forbidden `StateId::`/`Event::`, delimiters, and stale `dependsOn` design impacts |
-| **3. Native `rustc` + Trace Parity** | `RustSimRouter` (`cargo`) | `~1 s` | Full Rust borrow-checker, type inference, `debug_assert!` determinism checks, and bit-exact JS ↔ Rust runtime parity |
+| **2. Edit-Time & Impact Checks + Auto-Refactor** | `RustyAnalyzer` + Studio (browser) | `< 1 ms` | Red/yellow Monaco squiggles on `globals.*`, `payload`, forbidden `StateId::`/`Event::`, delimiters, automatic global/event rename refactoring, and stale `dependsOn` design impacts |
+| **3. Native `rustc` + Pre-Push Validator + Trace Parity** | `RustSimRouter` (`cargo`) | `~1 s` | Full Rust borrow-checker & type inference (both on demand and automatically on `webgme-git` workspace push), `debug_assert!` determinism checks, and bit-exact JS ↔ Rust runtime parity |

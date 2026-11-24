@@ -43,10 +43,12 @@ pub fn tr_heat_step(globals: &mut Globals) {
   - `on_exit(globals: &mut Globals)` runs before leaving the state (no `during` hook exists on states).
   - Neither `on_enter` nor `on_exit` receives an event `payload` (`RUSTY_E041` if referenced).
 - **Squashed Transition Action Hooks (`tr_<slug>`)**:
-  - Transitions with non-empty `action` bodies are emitted into the source state's `.rs` file with concise squashed function names such as `tr_heat_step` or `tr_set_target`, annotated with full `/// Transition:` / `/// Guard:` doc comments and `// @rusty:hook tr:<fnName>` markers.
+  - Transitions with non-empty action bodies are stored inside the source state's `src/states/<state>.rs` module in the `webgme-git` workspace (and never duplicated inside WebGME model attributes), with concise squashed function names such as `tr_heat_step` or `tr_set_target`, annotated with full `/// Transition:` / `/// Guard:` doc comments and `// @rusty:hook tr:<fnName>` markers.
   - If the trigger event declares a `payloadType` (for example `SetTarget` with `f64`), the signature automatically receives `payload: f64`.
 - **Single-Hook Contextual Editing**:
-  - In Rusty Studio, **State Inspector** (`Entry` | `Exit`) and **Transition Inspector** (`Action Hook`) display the complete composed `.rs` file so surrounding signatures and functions remain visible, while locking every line outside the active hook body as strictly read-only.
+  - In Rusty Studio, **State Inspector** (`Entry` | `Exit`) and **Transition Inspector** (`Action Hook`) display the complete composed `.rs` file hydrated from the active `webgme-git` workspace so surrounding signatures and functions remain visible, while locking every line outside the active hook body as strictly read-only.
+- **Automatic Rename Refactoring**:
+  - Renaming a `GlobalVar` or `EventDef` in Studio automatically rewrites every affected `globals.<name>` reference in state `.rs` files, transition guards, and transition trigger events across the workspace and updates `dependsOn` + `depsSignature` atomically.
 
 ## Execution Equivalence (Live Simulator & Native `rustc`)
 

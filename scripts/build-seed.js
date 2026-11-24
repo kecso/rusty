@@ -18,7 +18,6 @@ const {
   getStarterBlinkyModel,
   getSmartThermostatModel,
   getStateHookBodies,
-  composeStateModuleRs,
 } = require("../src/common/rustContract");
 const {
   extractDependencies,
@@ -125,7 +124,7 @@ function instantiateMachine(core, root, meta, model, rootPos) {
     modelEventsWithIds.push({ ...e, id: ePath });
   });
 
-  // States (V3 pure entryCode/exitCode + composed codeCache; inherits machine Git dir cleanly)
+  // States (design + GitArtifactLink metadata only; Rust code lives in webgme-git / GitHub)
   const stateNodesByName = new Map();
   const modelStatesWithIds = [];
   for (const st of model.states || []) {
@@ -136,9 +135,6 @@ function instantiateMachine(core, root, meta, model, rootPos) {
     core.setAttribute(sNode, "isInitial", Boolean(st.isInitial));
     core.setAttribute(sNode, "isFinal", Boolean(st.isFinal));
     core.setAttribute(sNode, "color", st.color || "#38bdf8");
-    core.setAttribute(sNode, "entryCode", hooks.entryCode || "");
-    core.setAttribute(sNode, "exitCode", hooks.exitCode || "");
-    core.setAttribute(sNode, "codeCache", st.code || "");
     core.setAttribute(sNode, "gitOwner", st.gitOwner || "");
     core.setAttribute(sNode, "gitRepo", st.gitRepo || "");
     core.setAttribute(sNode, "gitBranch", st.gitBranch || "");
@@ -157,7 +153,7 @@ function instantiateMachine(core, root, meta, model, rootPos) {
     modelStatesWithIds.push({ ...st, id: sPath, entryCode: hooks.entryCode, exitCode: hooks.exitCode });
   }
 
-  // Transitions (NO priority; includes reenter flag)
+  // Transitions (NO priority, NO action code attribute; includes reenter flag)
   const transitionEntries = [];
   for (const tr of model.transitions || []) {
     const srcNode = stateNodesByName.get(tr.srcName);
@@ -167,14 +163,13 @@ function instantiateMachine(core, root, meta, model, rootPos) {
     core.setAttribute(tNode, "name", tr.name);
     core.setAttribute(tNode, "event", tr.event);
     core.setAttribute(tNode, "guard", tr.guard || "");
-    core.setAttribute(tNode, "action", tr.action || "");
     core.setAttribute(tNode, "reenter", Boolean(tr.reenter));
     core.setPointer(tNode, "src", srcNode);
     core.setPointer(tNode, "dst", dstNode);
     transitionEntries.push({ tr, tNode });
   }
 
-  // Populate real WebGME `dependsOn` Set relationships + `depsSignature` + composed `codeCache`
+  // Populate real WebGME `dependsOn` Set relationships + `depsSignature`
   const modelWithIds = {
     ...model,
     globals: modelGlobalsWithIds,
@@ -184,8 +179,6 @@ function instantiateMachine(core, root, meta, model, rootPos) {
 
   for (const st of modelStatesWithIds) {
     const sNode = stateNodesByName.get(st.name);
-    const composed = composeStateModuleRs(modelWithIds, st).code;
-    core.setAttribute(sNode, "codeCache", composed);
     const deps = extractDependencies(`${st.entryCode || ""}\n${st.exitCode || ""}`, modelWithIds);
     core.setAttribute(sNode, "depsSignature", serializeDepsSnapshot(deps.snapshot));
     core.createSet(sNode, "dependsOn");

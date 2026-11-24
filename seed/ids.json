@@ -2,20 +2,20 @@
   "gitSeedLibrary": {
     "projectId": "guest+git-seed",
     "branchName": "master",
-    "commitHash": "#6f4fcc886d5dd59368cc13efe09f9b321ece0d80",
-    "hash": "#62b86d9e25a84e4396a6aa899e3deff00fde6352"
+    "commitHash": "#373eee8808faaee91058130d1eed3e4e64507714",
+    "hash": "#c0de44b02468656b9f5e06c35d65a48e671b8d2d"
   },
   "metaPaths": {
-    "GitArtifactLink": "/x/E",
-    "StateMachine": "/M",
-    "State": "/9",
-    "Transition": "/z",
-    "GlobalVar": "/E",
-    "EventDef": "/p"
+    "GitArtifactLink": "/V/z",
+    "StateMachine": "/U",
+    "State": "/Z",
+    "Transition": "/H",
+    "GlobalVar": "/D",
+    "EventDef": "/k"
   },
-  "starterMachinePath": "/y",
+  "starterMachinePath": "/u",
   "starterMachinePaths": {
-    "BlinkyController": "/y",
-    "SmartThermostat": "/m"
+    "BlinkyController": "/u",
+    "SmartThermostat": "/W"
   }
 }
