@@ -1,7 +1,9 @@
 /* eslint-env node */
 "use strict";
 
-require("dotenv").config();
+if (process.env.RUSTY_IGNORE_DOTENV !== "true" && process.env.NODE_ENV !== "test") {
+  require("dotenv").config();
+}
 
 const path = require("path");
 delete require.cache[require.resolve("webgme-engine/config/config.default")];
@@ -10,6 +12,7 @@ const config = require("webgme/config/config.default");
 const validateConfig = require("webgme/config/validator");
 const { applyGitConfig } = require("webgme-git/config/config.webgme.fragment");
 const { configureLayer1OAuth, hasOAuthEnv } = require("./configureOAuth");
+const { applyProfileOpenTargets } = require("./profileTargets");
 
 const ROOT = path.resolve(__dirname, "..");
 
@@ -81,5 +84,6 @@ if (authRequested) {
   config.authentication.oauth.enable = false;
 }
 
+applyProfileOpenTargets(config);
 validateConfig(config);
 module.exports = config;

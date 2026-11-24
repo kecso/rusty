@@ -79,8 +79,15 @@
 
     <!-- Main 3-Column Studio Body -->
     <main id="workspaceGrid" class="workspace">
-      <!-- Left Sidebar: Model Explorer (Collapsible States, Transitions, Globals, Events) -->
+      <!-- Left Sidebar: Model Explorer (Top Create Bar + Collapsible States, Transitions, Globals, Events) -->
       <aside id="leftSidebar" class="sidebar">
+        <div class="sidebar-create-bar" aria-label="Create model elements">
+          <button id="btnAddState" class="btn btn-xs btn-accent" title="Add a new State">+ State</button>
+          <button id="btnAddTransition" class="btn btn-xs btn-accent" title="Add a new Transition">+ Transition</button>
+          <button id="btnAddGlobal" class="btn btn-xs" title="Add a new Global Variable">+ Var</button>
+          <button id="btnAddEvent" class="btn btn-xs" title="Add a new Event Definition">+ Event</button>
+        </div>
+
         <section class="panel-section" data-section-name="states">
           <div class="section-header">
             <button type="button" class="section-toggle" data-collapse-section="states" aria-expanded="true" title="Collapse/expand States list">
@@ -88,7 +95,6 @@
               <h3>States</h3>
               <span id="countStates" class="count-pill">0</span>
             </button>
-            <button id="btnAddState" class="btn btn-xs btn-accent">+ State</button>
           </div>
           <ul id="stateList" class="item-list"></ul>
         </section>
@@ -100,7 +106,6 @@
               <h3>Transitions</h3>
               <span id="countTransitions" class="count-pill">0</span>
             </button>
-            <button id="btnAddTransition" class="btn btn-xs btn-accent">+ Transition</button>
           </div>
           <ul id="transitionList" class="item-list"></ul>
         </section>
@@ -112,7 +117,6 @@
               <h3>Globals</h3>
               <span id="countGlobals" class="count-pill">0</span>
             </button>
-            <button id="btnAddGlobal" class="btn btn-xs">+ Var</button>
           </div>
           <ul id="globalList" class="item-list"></ul>
         </section>
@@ -124,7 +128,6 @@
               <h3>Events</h3>
               <span id="countEvents" class="count-pill">0</span>
             </button>
-            <button id="btnAddEvent" class="btn btn-xs">+ Event</button>
           </div>
           <ul id="eventList" class="item-list"></ul>
         </section>

@@ -13,6 +13,7 @@ delete require.cache[require.resolve("./config.default")];
 const config = require("./config.default");
 const validateConfig = require("webgme/config/validator");
 const { configureLayer1OAuth } = require("./configureOAuth");
+const { applyProfileOpenTargets } = require("./profileTargets");
 
 config.authentication.enable = true;
 config.authentication.allowGuests = false;
@@ -32,5 +33,6 @@ if (process.env.RUSTY_SERVE_WEBGME_UI !== "true") {
   studioOpts.rootToStudio = true;
 }
 
+applyProfileOpenTargets(config);
 validateConfig(config);
 module.exports = config;

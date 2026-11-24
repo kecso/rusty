@@ -4,6 +4,7 @@
 delete require.cache[require.resolve("./config.default")];
 const config = require("./config.default");
 const validateConfig = require("webgme/config/validator");
+const { applyProfileOpenTargets } = require("./profileTargets");
 
 // Dev mode: keep guest access + both UIs enabled unless explicitly overridden
 if (process.env.RUSTY_AUTH !== "true") {
@@ -23,5 +24,6 @@ if (
   config.rest.components.studio.options.rootToStudio = false;
 }
 
+applyProfileOpenTargets(config);
 validateConfig(config);
 module.exports = config;

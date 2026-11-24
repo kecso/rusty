@@ -46,6 +46,7 @@
     // Active modals
     pendingConflict: null,
     elementModalConfirm: null,
+    pendingTransitionDraft: null,
     lastReadOnlyToastAt: 0,
   };
 
@@ -101,11 +102,14 @@
     return tr.action || "";
   }
 
-  function openElementModal({ title, fields, confirmLabel = "Save", onConfirm }) {
+  function openElementModal({ title, fields, confirmLabel = "Save", secondaryAction = null, onConfirm }) {
     $("elementModalTitle").textContent = title;
     $("btnConfirmElementModal").textContent = confirmLabel;
     const body = $("elementModalBody");
     body.innerHTML = "";
+
+    const footer = $("elementModal").querySelector(".modal-footer");
+    footer.querySelectorAll("[data-element-secondary]").forEach((el) => el.remove());
 
     for (const f of fields) {
       const wrap = document.createElement("label");
@@ -140,11 +144,32 @@
       body.appendChild(wrap);
     }
 
-    state.elementModalConfirm = () => {
+    const collectValues = () => {
       const values = {};
       for (const f of fields) {
         values[f.name] = $(`em_${f.name}`).value;
       }
+      return values;
+    };
+
+    if (secondaryAction && secondaryAction.label) {
+      const secBtn = document.createElement("button");
+      secBtn.type = "button";
+      if (secondaryAction.id) secBtn.id = secondaryAction.id;
+      secBtn.dataset.elementSecondary = "true";
+      secBtn.className = secondaryAction.className || "btn btn-sm btn-accent modal-secondary-btn";
+      secBtn.textContent = secondaryAction.label;
+      if (secondaryAction.title) secBtn.title = secondaryAction.title;
+      secBtn.addEventListener("click", () => {
+        if (typeof secondaryAction.onClick === "function") {
+          secondaryAction.onClick(collectValues());
+        }
+      });
+      footer.prepend(secBtn);
+    }
+
+    state.elementModalConfirm = () => {
+      const values = collectValues();
       if (onConfirm(values) !== false) {
         $("elementModal").classList.add("hidden");
         state.elementModalConfirm = null;
@@ -204,7 +229,7 @@
     tip.style.top = `${Math.min(relY, maxY)}px`;
   }
 
-  function openTransitionCreateModal(defaultSrcId = null, defaultDstId = null) {
+  function openTransitionCreateModal(defaultSrcId = null, defaultDstId = null, draft = null) {
     const m = activeMachine();
     if (!m || !m.states || m.states.length === 0) {
       toast("Create at least one State before adding a transition", "warn");
@@ -214,10 +239,29 @@
     const initialSrc = defaultSrcId && m.states.some((s) => s.id === defaultSrcId) ? defaultSrcId : m.states[0].id;
     const initialDst = defaultDstId && m.states.some((s) => s.id === defaultDstId) ? defaultDstId : initialSrc;
     const evOptions = m.events.map((e) => e.name);
+    const initialEvent =
+      draft && draft.event !== undefined
+        ? draft.event
+        : evOptions[0] || "Tick";
 
     openElementModal({
       title: "Add Transition",
       confirmLabel: "Create Transition",
+      secondaryAction: {
+        id: "btnPickTransitionOnDiagram",
+        label: "🎯 Pick on Diagram…",
+        title: "Switch to diagram mode to click Source and Target states visually",
+        onClick(vals) {
+          state.pendingTransitionDraft = {
+            event: vals.event,
+            name: vals.name,
+            guard: vals.guard,
+          };
+          $("elementModal").classList.add("hidden");
+          state.elementModalConfirm = null;
+          startTransitionCreation(null);
+        },
+      },
       fields: [
         {
           name: "srcId",
@@ -238,19 +282,19 @@
           label: "Trigger Event",
           type: evOptions.length ? "select" : "text",
           options: evOptions,
-          value: evOptions[0] || "Tick",
+          value: initialEvent,
         },
         {
           name: "name",
           label: "Short Transition Name",
           placeholder: "e.g. step_count",
-          value: "",
+          value: (draft && draft.name) || "",
         },
         {
           name: "guard",
           label: "Pure Guard Expression (optional)",
           placeholder: "e.g. count < limit",
-          value: "",
+          value: (draft && draft.guard) || "",
         },
       ],
       onConfirm(vals) {
@@ -262,6 +306,7 @@
           toast("Select both Source and Target states", "warn");
           return false;
         }
+        state.pendingTransitionDraft = null;
         const isSelf = srcId === dstId;
         const eventName = (vals.event || "").trim() || "Tick";
         const guard = (vals.guard || "").trim();
@@ -317,6 +362,7 @@
   }
 
   function cancelTransitionCreation() {
+    state.pendingTransitionDraft = null;
     if (!state.connectMode) return;
     state.connectMode = false;
     state.connectSourceId = null;
@@ -359,10 +405,12 @@
         return;
       }
       const srcId = state.connectSourceId;
+      const draft = state.pendingTransitionDraft;
+      state.pendingTransitionDraft = null;
       state.connectSourceId = null;
       state.connectMode = false;
       renderCanvas();
-      openTransitionCreateModal(srcId, stateId);
+      openTransitionCreateModal(srcId, stateId, draft);
     },
   });
 
@@ -1069,6 +1117,12 @@
     state.projects = projects;
     renderProjectSelect();
 
+    const urlParams = new URLSearchParams(window.location.search || "");
+    const reqProjectRaw = urlParams.get("project") || "";
+    const reqProjectPlus = reqProjectRaw.replace(/ /g, "+");
+    const reqBranch = urlParams.get("branch") || null;
+    const reqCommit = urlParams.get("commit") || null;
+
     if (projects.length === 0) {
       try {
         toast("Creating starter project 'RustyDemo' from RustySeed…", "ok");
@@ -1078,7 +1132,7 @@
         const pid = created.projectId || (state.projects[0] && state.projects[0]._id);
         if (pid) {
           $("projectSelect").value = pid;
-          await openSelectedProject(pid);
+          await openSelectedProject(pid, null, null);
         }
       } catch (err) {
         toast(`Could not auto-create starter project: ${err.message}`, "warn");
@@ -1086,16 +1140,46 @@
       return;
     }
 
-    const firstId = projects[0]._id;
-    $("projectSelect").value = firstId;
-    await openSelectedProject(firstId);
+    const matched = reqProjectRaw
+      ? projects.find((p) => p._id === reqProjectRaw || p._id === reqProjectPlus)
+      : null;
+    const targetProject = matched || projects[0];
+    const branchToOpen = matched ? reqBranch : null;
+    const commitToOpen = matched && !reqBranch ? reqCommit : null;
+
+    $("projectSelect").value = targetProject._id;
+    await openSelectedProject(targetProject._id, branchToOpen, commitToOpen);
   }
 
-  async function openSelectedProject(projectId) {
+  async function openSelectedProject(projectId, branchName = null, commitHash = null) {
     if (!projectId) return;
+    let resolvedBranch = branchName;
+    if (!resolvedBranch && !commitHash) {
+      const proj = state.projects.find((p) => p._id === projectId);
+      if (proj && proj.branches) {
+        const bNames = Object.keys(proj.branches);
+        if (bNames.length > 0 && !Object.hasOwn(proj.branches, "master")) {
+          resolvedBranch = bNames[0];
+        }
+      }
+    }
     try {
-      await bridge.openProject(projectId, "master");
-      toast(`Opened WebGME project ${projectId}`, "ok");
+      await bridge.openProject(projectId, resolvedBranch, commitHash);
+      const refLabel = bridge.branchName || (bridge.commitHash ? bridge.commitHash.slice(0, 8) : "master");
+      setBadge("gmeStatusBadge", `WebGME: ${refLabel}`, "badge-ok");
+      if (window.history && typeof window.history.replaceState === "function") {
+        const nextUrl = new URL(window.location.href);
+        nextUrl.searchParams.set("project", projectId);
+        if (bridge.branchName) {
+          nextUrl.searchParams.set("branch", bridge.branchName);
+          nextUrl.searchParams.delete("commit");
+        } else if (bridge.commitHash) {
+          nextUrl.searchParams.set("commit", bridge.commitHash);
+          nextUrl.searchParams.delete("branch");
+        }
+        window.history.replaceState(null, "", `${nextUrl.pathname}${nextUrl.search}`);
+      }
+      toast(`Opened WebGME project ${projectId} (${refLabel})`, "ok");
     } catch (err) {
       toast(`Failed to open project: ${err.message}`, "err");
     }
@@ -2270,10 +2354,14 @@
       });
     });
 
-    $("btnAddTransition").addEventListener("click", () => startTransitionCreation(null));
+    $("btnAddTransition").addEventListener("click", () => {
+      state.pendingTransitionDraft = null;
+      openTransitionCreateModal(null, null);
+    });
     $("btnAddStateOutgoingTrans").addEventListener("click", () => {
       const st = selectedStateObj();
-      startTransitionCreation(st ? st.id : null);
+      state.pendingTransitionDraft = null;
+      openTransitionCreateModal(st ? st.id : null, null);
     });
     $("btnPickModeBack").addEventListener("click", () => {
       state.connectSourceId = null;
@@ -2281,10 +2369,12 @@
     });
     $("btnPickModeForm").addEventListener("click", () => {
       const srcId = state.connectSourceId;
+      const draft = state.pendingTransitionDraft;
+      state.pendingTransitionDraft = null;
       state.connectMode = false;
       state.connectSourceId = null;
       renderCanvas();
-      openTransitionCreateModal(srcId, null);
+      openTransitionCreateModal(srcId, null, draft);
     });
     $("btnPickModeCancel").addEventListener("click", cancelTransitionCreation);
     document.addEventListener("keydown", (e) => {
@@ -2584,7 +2674,14 @@
 
     // Generic modal close buttons
     document.querySelectorAll("[data-close-modal]").forEach((btn) => {
-      btn.addEventListener("click", () => $(btn.dataset.closeModal).classList.add("hidden"));
+      btn.addEventListener("click", () => {
+        const id = btn.dataset.closeModal;
+        $(id).classList.add("hidden");
+        if (id === "elementModal") {
+          state.elementModalConfirm = null;
+          state.pendingTransitionDraft = null;
+        }
+      });
     });
   }
 

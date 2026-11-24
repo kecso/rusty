@@ -399,6 +399,18 @@ select:focus, input:focus, textarea:focus {
   flex-direction: column;
   gap: 14px;
 }
+.sidebar-create-bar {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+.sidebar-create-bar .btn {
+  width: 100%;
+  justify-content: center;
+  padding: 5px 8px;
+}
 
 .panel-section { display: flex; flex-direction: column; gap: 6px; }
 .panel-section.collapsed { gap: 0; }
@@ -1198,6 +1210,7 @@ select:focus, input:focus, textarea:focus {
 }
 .modal-header h3 { margin: 0; font-size: 14px; }
 .modal-footer { justify-content: flex-end; }
+.modal-secondary-btn { margin-right: auto; }
 .modal-body {
   padding: 14px;
   display: flex;

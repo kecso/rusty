@@ -36,9 +36,9 @@ From this point on, every state in `Counter` automatically maps to `examples/cou
 
 ## 3. Add States, Bounded Globals, and Events
 
-All three explorer lists on the left (`States`, `Globals`, `Events`) can be collapsed anytime with **`▾`** (or the entire side panes toggled with **`◧`** / **`◨`**).
+All four explorer sections on the left (`States`, `Transitions`, `Globals`, `Events`) can be collapsed anytime with **`▾`** (or the entire side panes toggled with **`◧`** / **`◨`**), while the create bar at the top of the Explorer gives one-click access to **`+ State`**, **`+ Transition`**, **`+ Var`**, and **`+ Event`**.
 
-1. **Create 3 States** using **`+ State`**:
+1. **Create 3 States** using **`+ State`** (at the top of the left Explorer):
    - **`Ready`** — check **Initial State**
    - **`Counting`**
    - **`LimitReached`**
@@ -52,17 +52,18 @@ All three explorer lists on the left (`States`, `Globals`, `Events`) can be coll
 
 ## 4. Wire Deterministic Model-Driven Transitions
 
-1. Click **`+ Transition`** in the **Transitions** explorer section (left panel) to enter source/target picking mode (existing transitions dim automatically so states stand out).
-2. Click **`Ready`**, then **`Counting`** → set Short Name `start`, Trigger Event `Start`, leave **Guard** empty → **Create Transition**.
-3. Click **`+ Transition`**, then click **`Counting`** twice (self-loop, `reenter` unchecked = internal reaction without firing Exit/Entry):
+Clicking **`+ Transition`** at the top of the left Explorer opens the **Add Transition** form directly (you can also click **🎯 Pick on Diagram…** inside the modal at any time to switch to visual source → target picking on the canvas, where existing transitions dim automatically).
+
+1. Click **`+ Transition`** → select Source **`Ready`**, Target **`Counting`**, Short Name `start`, Trigger Event `Start`, leave **Guard** empty → **Create Transition**.
+2. Click **`+ Transition`** → Source **`Counting`**, Target **`Counting`** (self-loop, `reenter` unchecked = internal reaction without firing Exit/Entry):
    - Short Name: `step`
    - Trigger Event: `Increment`
    - Guard: `count + 1 < limit`
-4. Click **`+ Transition`**, then **`Counting`** → **`LimitReached`**:
+3. Click **`+ Transition`** → Source **`Counting`**, Target **`LimitReached`**:
    - Short Name: `reached`
    - Trigger Event: `Increment`
    - Guard: `count + 1 >= limit`
-5. Click **`+ Transition`**, then **`LimitReached`** → **`Ready`**:
+4. Click **`+ Transition`** → Source **`LimitReached`**, Target **`Ready`**:
    - Short Name: `reset`
    - Trigger Event: `Reset`
 

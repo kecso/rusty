@@ -17,6 +17,7 @@
       this.uiId = null;
       this.projectId = null;
       this.branchName = "master";
+      this.commitHash = null;
       this.metaByName = new Map();
       this.listeners = new Set();
       this.connected = false;
@@ -84,7 +85,7 @@
       });
     }
 
-    async openProject(projectId, branchName) {
+    async openProject(projectId, branchName, commitHash) {
       if (this.uiId) {
         try {
           this.client.removeUI(this.uiId);
@@ -102,7 +103,19 @@
       });
 
       this.projectId = projectId;
-      this.branchName = this.client.getActiveBranchName() || branchName || "master";
+      if (commitHash && !branchName) {
+        await new Promise((resolve, reject) => {
+          this.client.selectCommit(commitHash, (err) => {
+            if (err) reject(err);
+            else resolve();
+          });
+        });
+        this.branchName = null;
+        this.commitHash = commitHash;
+      } else {
+        this.branchName = this.client.getActiveBranchName() || branchName || "master";
+        this.commitHash = null;
+      }
 
       this._indexMetaNodes();
 

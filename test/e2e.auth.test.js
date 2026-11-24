@@ -270,6 +270,7 @@ describe("Rusty E2E Layer 1 (OIDC) + Layer 2 (webgme-git) Server", { timeout: 30
     const port = await getFreePort();
     baseUrl = `http://127.0.0.1:${port}`;
 
+    process.env.RUSTY_IGNORE_DOTENV = "true";
     process.env.PORT = String(port);
     process.env.MONGO_URI = mongoUri;
     process.env.WEBGME_BASE_URL = baseUrl;
@@ -277,6 +278,13 @@ describe("Rusty E2E Layer 1 (OIDC) + Layer 2 (webgme-git) Server", { timeout: 30
     process.env.OAUTH_PROVIDER = "oidc";
     process.env.OAUTH_DISCOVERY_URL = oidcInfo.discoveryUrl;
     process.env.OAUTH_CLIENT_ID = "rusty-e2e-client";
+    delete process.env.RUSTY_SERVE_WEBGME_UI;
+    delete process.env.RUSTY_ROOT_TO_STUDIO;
+    delete process.env.RUSTY_STUDIO_ONLY;
+    delete process.env.RUSTY_ALLOW_PASSWORD_LOGIN;
+    delete process.env.OAUTH_AUTHORIZATION_URL;
+    delete process.env.OAUTH_TOKEN_URL;
+    delete process.env.OAUTH_USERINFO_URL;
     delete process.env.OAUTH_CLIENT_SECRET;
     delete process.env.OAUTH_REDIRECT_URI;
     delete process.env.GITHUB_APP_CLIENT_ID;

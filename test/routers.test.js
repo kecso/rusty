@@ -68,8 +68,16 @@ describe("Rusty WebGME Routers", () => {
     assert.doesNotMatch(html, /id="transMonacoHost"/);
     assert.doesNotMatch(html, /id="btnExpandEditor"/);
     assert.doesNotMatch(html, /id="inpStateColor"/);
+    assert.match(html, /class="sidebar-create-bar"/);
+    assert.ok(
+      html.indexOf('class="sidebar-create-bar"') < html.indexOf('data-section-name="states"'),
+      "Create buttons bar must appear at the top of left Explorer sidebar",
+    );
+    assert.match(html, /id="btnAddState"/);
     assert.match(html, /id="transitionList"/);
     assert.match(html, /id="btnAddTransition"/);
+    assert.match(html, /id="btnAddGlobal"/);
+    assert.match(html, /id="btnAddEvent"/);
     assert.match(html, /id="pickModeBanner"/);
     assert.match(html, /id="tabCodeEditor"/);
     assert.match(html, /id="centerMonacoHost"/);
@@ -108,6 +116,12 @@ describe("Rusty WebGME Routers", () => {
     const docsRes = await fetch(`${baseUrl}/routers/studio/docs/`);
     assert.equal(docsRes.status, 200);
     assert.match(await docsRes.text(), /Rusty/);
+
+    const appJsRes = await fetch(`${baseUrl}/routers/studio/app.js`);
+    assert.equal(appJsRes.status, 200);
+    const appJs = await appJsRes.text();
+    assert.match(appJs, /btnPickTransitionOnDiagram/);
+    assert.match(appJs, /URLSearchParams/);
   });
 
   it("serves native webgme-git GitRouter /status", async () => {
@@ -151,35 +165,79 @@ describe("Rusty WebGME Routers", () => {
   });
 
   it("validates default, dev, and prod configurations with Layer 1/Layer 2 wiring", () => {
-    const defCfg = require("../config/config.default");
-    const devCfg = require("../config/config.dev");
-    const prodCfg = require("../config/config.prod");
+    const savedEnv = { ...process.env };
+    const envKeysToClear = [
+      "RUSTY_AUTH",
+      "RUSTY_STUDIO_ONLY",
+      "RUSTY_SERVE_WEBGME_UI",
+      "RUSTY_ROOT_TO_STUDIO",
+      "RUSTY_ALLOW_PASSWORD_LOGIN",
+      "RUSTY_ENABLE_ACCESS_TOKENS",
+      "OAUTH_PROVIDER",
+      "OAUTH_DISCOVERY_URL",
+      "OAUTH_CLIENT_ID",
+      "OAUTH_CLIENT_SECRET",
+      "OAUTH_REDIRECT_URI",
+      "OAUTH_AUTHORIZATION_URL",
+      "OAUTH_TOKEN_URL",
+      "OAUTH_USERINFO_URL",
+      "WEBGME_BASE_URL",
+    ];
+    const clearCfgCache = () => {
+      for (const m of ["../config/config.default", "../config/config.dev", "../config/config.prod"]) {
+        delete require.cache[require.resolve(m)];
+      }
+    };
 
-    assert.equal(defCfg.rest.components.root.mount, "");
-    assert.equal(
-      defCfg.rest.components.gitrouter.src,
-      require.resolve("webgme-git/src/routers/GitRouter.js"),
-    );
-    assert.equal(
-      defCfg.authentication.userManagementPage,
-      require.resolve("webgme-git/profile.js"),
-    );
-    assert.equal(defCfg.seedProjects.defaultProject, "RustySeed");
-    assert.ok(defCfg.seedProjects.basePaths.length >= 2);
-    assert.equal(defCfg.rest.components.studio.options.serveWebGMEUI, true);
-    assert.equal(defCfg.rest.components.studio.options.rootToStudio, false);
+    try {
+      process.env.RUSTY_IGNORE_DOTENV = "true";
+      for (const k of envKeysToClear) delete process.env[k];
+      clearCfgCache();
 
-    assert.equal(devCfg.rest.components.studio.options.serveWebGMEUI, true);
-    assert.equal(devCfg.rest.components.studio.options.rootToStudio, false);
+      const defCfg = require("../config/config.default");
+      const devCfg = require("../config/config.dev");
+      const prodCfg = require("../config/config.prod");
 
-    assert.equal(prodCfg.rest.components.studio.options.serveWebGMEUI, false);
-    assert.equal(prodCfg.rest.components.studio.options.rootToStudio, true);
-    assert.equal(prodCfg.authentication.enable, true);
-    assert.equal(prodCfg.authentication.allowGuests, false);
-    assert.equal(prodCfg.authentication.allowPasswordLogin, true);
-    assert.equal(prodCfg.authentication.oauth.enable, false);
-    assert.equal(prodCfg.authentication.logInUrl, "/profile/login");
-    assert.equal(prodCfg.authentication.logOutUrl, "/profile/login");
+      assert.equal(defCfg.rest.components.root.mount, "");
+      assert.equal(
+        defCfg.rest.components.gitrouter.src,
+        require.resolve("webgme-git/src/routers/GitRouter.js"),
+      );
+      assert.equal(
+        defCfg.authentication.userManagementPage,
+        require.resolve("webgme-git/profile.js"),
+      );
+      assert.equal(defCfg.seedProjects.defaultProject, "RustySeed");
+      assert.ok(defCfg.seedProjects.basePaths.length >= 2);
+      assert.equal(defCfg.rest.components.studio.options.serveWebGMEUI, true);
+      assert.equal(defCfg.rest.components.studio.options.rootToStudio, false);
+      assert.deepEqual(defCfg.authentication.userManagementPageOptions.projectOpenTargets, [
+        { label: "Studio", path: "/routers/studio" },
+        { label: "WebGME", path: "/" },
+      ]);
+
+      assert.equal(devCfg.rest.components.studio.options.serveWebGMEUI, true);
+      assert.equal(devCfg.rest.components.studio.options.rootToStudio, false);
+      assert.deepEqual(devCfg.authentication.userManagementPageOptions.projectOpenTargets, [
+        { label: "Studio", path: "/routers/studio" },
+        { label: "WebGME", path: "/" },
+      ]);
+
+      assert.equal(prodCfg.rest.components.studio.options.serveWebGMEUI, false);
+      assert.equal(prodCfg.rest.components.studio.options.rootToStudio, true);
+      assert.deepEqual(prodCfg.authentication.userManagementPageOptions.projectOpenTargets, [
+        { label: "Studio", path: "/" },
+      ]);
+      assert.equal(prodCfg.authentication.enable, true);
+      assert.equal(prodCfg.authentication.allowGuests, false);
+      assert.equal(prodCfg.authentication.allowPasswordLogin, true);
+      assert.equal(prodCfg.authentication.oauth.enable, false);
+      assert.equal(prodCfg.authentication.logInUrl, "/profile/login");
+      assert.equal(prodCfg.authentication.logOutUrl, "/profile/login");
+    } finally {
+      process.env = savedEnv;
+      clearCfgCache();
+    }
   });
 
   it("configures Layer 1 OAuth presets (GitHub, Google, generic OIDC) cleanly and passes validator", () => {
